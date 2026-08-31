@@ -12,8 +12,6 @@ models:
     name: Gemini 3.7 Flash Medium
   - id: gemini-3.7-flash-low
     name: Gemini 3.7 Flash Low
-  - id: gemini-3.7-pro
-    name: Gemini 3.7 Pro
   - id: gemini-3.6-flash
     name: Gemini 3.6 Flash Medium
   - id: gemini-3.5-flash

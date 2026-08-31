@@ -19,6 +19,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import threading
 import time
 import urllib.error
@@ -400,15 +401,25 @@ class AntigravityAuthManager:
             all_creds = self.load_all_stored_credentials()
             creds = None
             if bearer_token and all_creds:
-                for c in all_creds:
-                    if (
-                        c.access_token == bearer_token
-                        or (bearer_token.startswith("ya29.") and c.access_token.startswith(bearer_token[:20]))
-                        or c.email == bearer_token
-                        or c.email.startswith(bearer_token)
-                    ):
-                        creds = c
-                        break
+                            for c in all_creds:
+                                # Exact match on the full access token.
+                                if c.access_token == bearer_token:
+                                    creds = c
+                                    break
+                                # Google OAuth access tokens all start with "ya29."; use a
+                                # 40-char prefix match (long enough to avoid collisions
+                                # between distinct accounts) instead of only 20 chars.
+                                if (
+                                    bearer_token.startswith("ya29.")
+                                    and c.access_token.startswith(bearer_token[:40])
+                                ):
+                                    creds = c
+                                    break
+                                # Match by full email only — prefix matching would let
+                                # "user" match "user@example.com" AND "user@other.com".
+                                if c.email == bearer_token:
+                                    creds = c
+                                    break
 
             if not creds:
                 creds = self.load_stored_credentials()

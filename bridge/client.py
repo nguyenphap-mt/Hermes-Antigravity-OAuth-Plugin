@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
-from tools.antigravity_bridge.auth import (
+from .auth import (
     AntigravityAuthManager,
     AntigravityCredentials,
     DEFAULT_PROJECT_ID,
@@ -120,8 +120,10 @@ MODEL_ALIAS_MAP = {
     "claude-opus-4.6": "claude-sonnet-4-6",
     "claude-3-7-opus": "claude-sonnet-4-6",
     "claude-3.7-opus": "claude-sonnet-4-6",
-    # GPT-OSS 120B — maps to flash as safe fallback
-    "gpt-oss-120b": "gemini-3-flash-agent",
+    # GPT-OSS 120B — Antigravity may not always advertise this model; if
+        # the upstream rejects the request we fall back to the flash agent so
+        # the user still gets a usable response instead of a hard error.
+        "gpt-oss-120b": "gemini-3-flash-agent",
 }
 
 

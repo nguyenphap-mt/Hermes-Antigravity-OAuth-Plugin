@@ -8,15 +8,15 @@ models to Hermes.
 
 from __future__ import annotations
 
-from tools.antigravity_bridge.auth import (
+from .auth import (
     AntigravityAuthManager,
     AntigravityCredentials,
 )
-from tools.antigravity_bridge.client import (
+from .client import (
     AntigravityClient,
     ANTIGRAVITY_SUPPORTED_MODELS,
 )
-from tools.antigravity_bridge.server import (
+from .server import (
     AntigravityBridgeServer,
     run_server,
 )

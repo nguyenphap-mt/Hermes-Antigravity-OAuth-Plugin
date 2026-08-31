@@ -75,15 +75,21 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     log_fd = open(log_file, "a", encoding="utf-8")
 
+    # SECURITY: avoid Python string interpolation into -c (code injection risk).
+    # Pass host/port via env vars; spawned process reads BRIDGE_HOST/BRIDGE_PORT.
+    # Use `python -m antigravity_bridge.server` (not -c) so relative imports work
+    # and host/port cannot be injected into Python source.
     cmd = [
         sys.executable,
         "-u",
-        "-c",
-        f"import sys; sys.path.insert(0, r'{PLUGIN_ROOT}'); sys.path.insert(0, r'{REPO_ROOT}'); from bridge.server import run_server; run_server(host='{host}', port={port})",
+        "-m",
+        "antigravity_bridge.server",
     ]
 
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    env["BRIDGE_HOST"] = host
+    env["BRIDGE_PORT"] = str(port)
 
     flags = 0
     if sys.platform == "win32":
@@ -92,7 +98,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     try:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(PLUGIN_ROOT),
+            cwd=str(PLUGIN_ROOT / "tools"),
             stdout=log_fd,
             stderr=log_fd,
             stdin=subprocess.DEVNULL,
@@ -103,7 +109,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         flags = 0x00000008 | 0x00000200
         proc = subprocess.Popen(
             cmd,
-            cwd=str(PLUGIN_ROOT),
+            cwd=str(PLUGIN_ROOT / "tools"),
             stdout=log_fd,
             stderr=log_fd,
             stdin=subprocess.DEVNULL,

@@ -22,11 +22,11 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web
 
-from tools.antigravity_bridge.auth import (
+from .auth import (
     AntigravityAuthManager,
     get_hermes_dir,
 )
-from tools.antigravity_bridge.client import (
+from .client import (
     ANTIGRAVITY_SUPPORTED_MODELS,
     AntigravityClient,
 )
@@ -51,6 +51,12 @@ def get_log_file() -> Path:
     log_dir = get_hermes_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / "antigravity_bridge.log"
+
+
+# Bug #15 fix: named subprocess flag constants instead of magic hex.
+_WIN_DETACHED_PROCESS = 0x00000008
+_WIN_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_WIN_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 class AntigravityBridgeServer:
@@ -156,7 +162,17 @@ class AntigravityBridgeServer:
                 first_chunk = await stream_gen.__anext__()
             except Exception as e:
                 logger.error("Error connecting to chat completion stream: %s", e)
-                status_code = 429 if "429" in str(e) or "exhausted" in str(e).lower() else (403 if "403" in str(e) else 500)
+                # Bug #11 fix: prefer httpx's structured response.status_code when available,
+                # fall back to string parsing only for opaque errors.
+                status_code = 500
+                try:
+                    status_code = e.response.status_code  # type: ignore[attr-defined]
+                except AttributeError:
+                    msg = str(e).lower()
+                    if "429" in str(e) or "exhausted" in msg:
+                        status_code = 429
+                    elif "403" in str(e):
+                        status_code = 403
                 err_type = "rate_limit_error" if status_code == 429 else "api_error"
                 return web.json_response(
                     {"error": {"message": str(e), "type": err_type, "code": status_code}},
@@ -195,7 +211,15 @@ class AntigravityBridgeServer:
                 return web.json_response(result)
             except Exception as e:
                 logger.error("Error during chat completion: %s", e)
-                status_code = 429 if "429" in str(e) or "exhausted" in str(e).lower() else (403 if "403" in str(e) else 500)
+                status_code = 500
+                try:
+                    status_code = e.response.status_code  # type: ignore[attr-defined]
+                except AttributeError:
+                    msg = str(e).lower()
+                    if "429" in str(e) or "exhausted" in msg:
+                        status_code = 429
+                    elif "403" in str(e):
+                        status_code = 403
                 err_type = "rate_limit_error" if status_code == 429 else "api_error"
                 return web.json_response(
                     {"error": {"message": str(e), "type": err_type, "code": status_code}},
@@ -224,7 +248,9 @@ def is_server_running(host: str = DEFAULT_BRIDGE_HOST, port: int = DEFAULT_BRIDG
         req = urllib.request.Request(f"http://{host}:{port}/health")
         with urllib.request.urlopen(req, timeout=1.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return data.get("bridge") == "antigravity"
+            # Bug #13 fix: also verify status field is "ok" so degraded
+            # servers don't report as running.
+            return data.get("bridge") == "antigravity" and data.get("status") == "ok"
     except Exception:
         return False
 
@@ -238,50 +264,96 @@ def ensure_antigravity_bridge_running(
     if is_server_running(host=host, port=port):
         return True
 
-    import subprocess
-    import sys
-    import time
-
     try:
-        from tools.antigravity_bridge.auth import AntigravityAuthManager
+        from .auth import AntigravityAuthManager
         mgr = AntigravityAuthManager()
         if not mgr.load_all_stored_credentials():
             return False
     except Exception:
         return False
 
+    # Bug #12 fix: avoid string interpolation into python -c (potential code
+    # injection). Pass host/port as JSON-encoded argv instead and parse inside.
     cmd = [
         sys.executable,
         "-u",
         "-c",
-        f"from tools.antigravity_bridge.server import run_server; run_server(host='{host}', port={port})",
+        (
+            "import sys, json;"
+            " cfg = json.loads(sys.argv[1]);"
+            " sys.path.insert(0, cfg['cwd']);"
+            " from antigravity_bridge.server import run_server;"
+            " run_server(host=cfg['host'], port=cfg['port'])"
+        ),
+        "__ANTIGRAVITY_CONFIG__",  # placeholder argv[1]
     ]
 
+    # Substitute the config safely via argv (no shell, no interpolation).
+    import json as _json
+    safe_cfg = _json.dumps({"host": host, "port": port, "cwd": str(get_bridge_dir() / "tools")})
+    cmd[-1] = safe_cfg
+
+    # Bug #14/15 fix: use named subprocess flags instead of magic hex, and
+    # only write the PID file after the process is verified alive.
     try:
         if sys.platform == "win32":
-            subprocess.Popen(
+            creationflags = (
+                _WIN_DETACHED_PROCESS
+                | _WIN_CREATE_NEW_PROCESS_GROUP
+                | _WIN_CREATE_BREAKAWAY_FROM_JOB
+            )
+            proc = subprocess.Popen(
                 cmd,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+                creationflags=creationflags,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 close_fds=True,
             )
         else:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 close_fds=True,
             )
+
+        # Wait for server to actually come up before recording PID.
         deadline = time.time() + timeout
         while time.time() < deadline:
-            time.sleep(0.2)
             if is_server_running(host=host, port=port):
+                pid_file = get_pid_file()
+                try:
+                    pid_file.write_text(str(proc.pid), encoding="utf-8")
+                except Exception as write_err:
+                    logger.debug("Failed to write PID file: %s", write_err)
                 logger.info("Antigravity Bridge auto-started on http://%s:%s", host, port)
                 return True
+            # If process already died, give up early.
+            if proc.poll() is not None:
+                logger.warning(
+                    "Antigravity Bridge daemon exited immediately (code=%s)", proc.returncode
+                )
+                return False
+            time.sleep(0.2)
+
         return is_server_running(host=host, port=port)
     except Exception as e:
         logger.warning("Failed to auto-spawn Antigravity Bridge: %s", e)
         return False
 
+
+if __name__ == "__main__":
+    # When invoked via `python -m antigravity_bridge.server`, read host/port
+    # from env vars and start the server. Without this, daemon spawn would
+    # import the module but never call run_server (it would exit immediately).
+    import os as _os
+
+    _host = _os.environ.get("BRIDGE_HOST", DEFAULT_BRIDGE_HOST)
+    try:
+        _port = int(_os.environ.get("BRIDGE_PORT", str(DEFAULT_BRIDGE_PORT)))
+    except ValueError:
+        _port = DEFAULT_BRIDGE_PORT
+    run_server(host=_host, port=_port)
