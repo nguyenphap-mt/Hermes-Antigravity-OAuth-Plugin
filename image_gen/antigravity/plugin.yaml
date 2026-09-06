@@ -1,0 +1,5 @@
+name: antigravity
+version: 1.0.0
+description: "Google Antigravity image generation backend (Gemini 3.1 Flash Image). Saves generated images to $HERMES_HOME/cache/images/."
+author: Nguyen Phap
+kind: backend

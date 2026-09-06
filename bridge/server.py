@@ -22,14 +22,29 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web
 
-from tools.antigravity_bridge.auth import (
-    AntigravityAuthManager,
-    get_hermes_dir,
-)
-from tools.antigravity_bridge.client import (
-    ANTIGRAVITY_SUPPORTED_MODELS,
-    AntigravityClient,
-)
+try:
+    from tools.antigravity_bridge.auth import (
+        AntigravityAuthManager,
+        get_hermes_dir,
+    )
+    from tools.antigravity_bridge.client import (
+        ANTIGRAVITY_SUPPORTED_MODELS,
+        AntigravityClient,
+    )
+except ImportError:
+    from .auth import (
+        AntigravityAuthManager,
+        get_hermes_dir,
+    )
+    from .client import (
+        ANTIGRAVITY_SUPPORTED_MODELS,
+        AntigravityClient,
+    )
+
+try:
+    from tools.antigravity_bridge.models import ModelDiscoveryManager
+except ImportError:
+    from .models import ModelDiscoveryManager
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +76,13 @@ class AntigravityBridgeServer:
         host: str = DEFAULT_BRIDGE_HOST,
         port: int = DEFAULT_BRIDGE_PORT,
         auth_manager: Optional[AntigravityAuthManager] = None,
+        model_discovery: Optional[ModelDiscoveryManager] = None,
     ) -> None:
         self.host = host
         self.port = port
         self.auth_manager = auth_manager or AntigravityAuthManager()
-        self.client = AntigravityClient(self.auth_manager)
+        self.model_discovery = model_discovery or ModelDiscoveryManager(self.auth_manager)
+        self.client = AntigravityClient(self.auth_manager, self.model_discovery)
         self.app = web.Application()
         self._setup_routes()
 
@@ -74,6 +91,7 @@ class AntigravityBridgeServer:
         self.app.router.add_get("/auth/status", self.handle_auth_status)
         self.app.router.add_post("/auth/login", self.handle_auth_login)
         self.app.router.add_get("/v1/models", self.handle_list_models)
+        self.app.router.add_get("/v1/quota", self.handle_quota)
         self.app.router.add_post("/v1/chat/completions", self.handle_chat_completions)
 
     async def handle_health(self, request: web.Request) -> web.Response:
@@ -117,20 +135,17 @@ class AntigravityBridgeServer:
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_list_models(self, request: web.Request) -> web.Response:
-        models = []
-        for m in ANTIGRAVITY_SUPPORTED_MODELS:
-            models.append({
-                "id": m["id"],
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "antigravity",
-                "permission": [],
-                "description": m.get("description", ""),
-            })
+        force_refresh = request.query.get("refresh", "").lower() in {"1", "true", "yes"}
+        models = await asyncio.to_thread(self.model_discovery.list_openai_models, force_refresh=force_refresh)
         return web.json_response({
             "object": "list",
             "data": models,
         })
+
+    async def handle_quota(self, request: web.Request) -> web.Response:
+        force_refresh = request.query.get("refresh", "").lower() in {"1", "true", "yes"}
+        quota_data = await asyncio.to_thread(self.model_discovery.fetch_quota_summary, force_refresh=force_refresh)
+        return web.json_response(quota_data)
 
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         try:
@@ -212,9 +227,41 @@ class AntigravityBridgeServer:
 
 
 def run_server(host: str = DEFAULT_BRIDGE_HOST, port: int = DEFAULT_BRIDGE_PORT) -> None:
-    """Run the bridge server in the foreground."""
-    server = AntigravityBridgeServer(host=host, port=port)
-    web.run_app(server.app, host=host, port=port)
+    """Run the bridge server with asyncio event loop."""
+    import asyncio
+    import os
+    pid_file = get_pid_file()
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(pid_file, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
+    async def _serve():
+        server = AntigravityBridgeServer(host=host, port=port)
+        runner = await server.start()
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        finally:
+            await runner.cleanup()
+            try:
+                if pid_file.exists():
+                    pid_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    try:
+        asyncio.run(_serve())
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        try:
+            if pid_file.exists():
+                pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def is_server_running(host: str = DEFAULT_BRIDGE_HOST, port: int = DEFAULT_BRIDGE_PORT) -> bool:
@@ -232,7 +279,7 @@ def is_server_running(host: str = DEFAULT_BRIDGE_HOST, port: int = DEFAULT_BRIDG
 def ensure_antigravity_bridge_running(
     host: str = DEFAULT_BRIDGE_HOST,
     port: int = DEFAULT_BRIDGE_PORT,
-    timeout: float = 3.0,
+    timeout: float = 4.0,
 ) -> bool:
     """Ensure the Antigravity bridge server is running, spawning a daemon if not."""
     if is_server_running(host=host, port=port):
@@ -241,35 +288,67 @@ def ensure_antigravity_bridge_running(
     import subprocess
     import sys
     import time
+    from pathlib import Path
 
     try:
-        from tools.antigravity_bridge.auth import AntigravityAuthManager
+        try:
+            from tools.antigravity_bridge.auth import AntigravityAuthManager
+        except ImportError:
+            from .auth import AntigravityAuthManager
         mgr = AntigravityAuthManager()
         if not mgr.load_all_stored_credentials():
+            logger.debug("Antigravity bridge auto-spawn skipped: no stored credentials")
             return False
-    except Exception:
+    except Exception as ex:
+        logger.debug("Antigravity bridge auth check failed: %s", ex)
         return False
 
-    cmd = [
-        sys.executable,
-        "-u",
-        "-c",
-        f"from tools.antigravity_bridge.server import run_server; run_server(host='{host}', port={port})",
-    ]
+    plugin_root = Path(__file__).resolve().parent.parent
+    log_file = get_log_file()
+
+    runner_code = (
+        f"import sys, os\n"
+        f"p = r'{plugin_root}'\n"
+        f"if p not in sys.path: sys.path.insert(0, p)\n"
+        f"try:\n"
+        f"    log_fd = open(r'{log_file}', 'a', encoding='utf-8')\n"
+        f"    sys.stdout = log_fd\n"
+        f"    sys.stderr = log_fd\n"
+        f"except Exception:\n"
+        f"    pass\n"
+        f"try:\n"
+        f"    from tools.antigravity_bridge.server import run_server\n"
+        f"except ImportError:\n"
+        f"    from bridge.server import run_server\n"
+        f"run_server(host='{host}', port={port})\n"
+    )
 
     try:
         if sys.platform == "win32":
-            subprocess.Popen(
-                cmd,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            try:
+                subprocess.Popen(
+                    [sys.executable, "-u", "-c", runner_code],
+                    creationflags=flags | 0x01000000,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+            except OSError:
+                subprocess.Popen(
+                    [sys.executable, "-u", "-c", runner_code],
+                    creationflags=flags,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
         else:
             subprocess.Popen(
-                cmd,
+                [sys.executable, "-u", "-c", runner_code],
                 start_new_session=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,

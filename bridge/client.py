@@ -18,11 +18,23 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
-from tools.antigravity_bridge.auth import (
-    AntigravityAuthManager,
-    AntigravityCredentials,
-    DEFAULT_PROJECT_ID,
-)
+try:
+    from tools.antigravity_bridge.auth import (
+        AntigravityAuthManager,
+        AntigravityCredentials,
+        DEFAULT_PROJECT_ID,
+    )
+except ImportError:
+    from .auth import (
+        AntigravityAuthManager,
+        AntigravityCredentials,
+        DEFAULT_PROJECT_ID,
+    )
+
+try:
+    from tools.antigravity_bridge.models import ModelDiscoveryManager
+except ImportError:
+    from .models import ModelDiscoveryManager
 
 logger = logging.getLogger(__name__)
 
@@ -149,21 +161,31 @@ def map_model_name(requested_model: str) -> str:
 
 
 def build_antigravity_headers(access_token: str, project_id: str = "") -> Dict[str, str]:
-    """Generate HTTP headers simulating Antigravity IDE."""
-    headers = {
+    """Generate HTTP headers simulating Antigravity IDE using dynamic fingerprinting."""
+    try:
+        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+        return AntigravityFingerprint.build_headers(access_token, project_id=project_id)
+    except ImportError:
+        try:
+            from bridge.fingerprint import AntigravityFingerprint
+            return AntigravityFingerprint.build_headers(access_token, project_id=project_id)
+        except Exception:
+            pass
+
+    return {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {access_token}",
-        "User-Agent": "Antigravity/1.0.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.x",
-        "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1 gccl/antigravity-ide",
+        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
+        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
         "Client-Metadata": json.dumps({
             "ideType": "ANTIGRAVITY",
-            "platform": "PLATFORM_UNSPECIFIED",
+            "platform": "PLATFORM_WINDOWS",
             "pluginType": "GEMINI",
+            "applicationVersion": "2.11.0",
         }, separators=(",", ":")),
         "x-activity-request-id": str(uuid.uuid4()),
     }
-    return headers
 
 
 # =============================================================================
@@ -293,6 +315,45 @@ def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
     return {"functionResponse": function_response}
 
 
+def _clean_schema_for_gemini(val: Any) -> Any:
+    """Sanitize JSON Schema / OpenAPI schema to be strictly compliant with Google Gemini / Code Assist Protobuf schema.
+
+    Google Cloud Code Assist uses a strict protobuf Schema parser that rejects unknown fields
+    such as 'exclusiveMinimum', 'exclusiveMaximum', '$schema', 'patternProperties', 'additionalProperties', etc.
+    with HTTP 400 INVALID_ARGUMENT.
+
+    This function recursively traverses the schema and cleans it safely while preserving constraints.
+    """
+    if not isinstance(val, dict):
+        if isinstance(val, list):
+            return [_clean_schema_for_gemini(x) for x in val]
+        return val
+
+    DISALLOWED_GEMINI_FIELDS = {
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "$schema",
+        "$id",
+        "$ref",
+        "patternProperties",
+        "additionalProperties",
+        "definitions",
+        "$defs",
+    }
+
+    cleaned: Dict[str, Any] = {}
+    for k, v in val.items():
+        if k in DISALLOWED_GEMINI_FIELDS:
+            # Map exclusive bounds to inclusive bounds if not already defined
+            if k == "exclusiveMinimum" and isinstance(v, (int, float)) and "minimum" not in val:
+                cleaned["minimum"] = v
+            elif k == "exclusiveMaximum" and isinstance(v, (int, float)) and "maximum" not in val:
+                cleaned["maximum"] = v
+            continue
+        cleaned[k] = _clean_schema_for_gemini(v)
+    return cleaned
+
+
 def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
     if not isinstance(tools, list) or not tools:
         return []
@@ -311,7 +372,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = str(fn["description"])
         params = fn.get("parameters")
         if isinstance(params, dict):
-            decl["parameters"] = params
+            decl["parameters"] = _clean_schema_for_gemini(params)
         declarations.append(decl)
     if not declarations:
         return []
@@ -381,10 +442,16 @@ def _extract_tool_calls_from_text(text: str) -> tuple[List[Dict[str, Any]], str]
 def build_code_assist_request(
     openai_payload: Dict[str, Any],
     project_id: str,
+    model_discovery: Optional[ModelDiscoveryManager] = None,
 ) -> Dict[str, Any]:
     """Convert an OpenAI /v1/chat/completions payload to Code Assist envelope format."""
     messages = openai_payload.get("messages") or []
-    model_name = map_model_name(openai_payload.get("model") or "gemini-3.7-flash")
+    req_model = openai_payload.get("model") or "gemini-3.7-flash"
+    model_meta: Dict[str, Any] = {}
+    if model_discovery is not None:
+        model_name, model_meta = model_discovery.resolve_model(req_model)
+    else:
+        model_name = map_model_name(req_model)
 
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
@@ -481,6 +548,17 @@ def build_code_assist_request(
     inner_request: Dict[str, Any] = {
         "contents": contents,
     }
+    # Auto-inject thinkingConfig if model supports thinking
+    if model_meta.get("supports_thinking"):
+        budget = model_meta.get("thinking_budget", 2048)
+        user_budget = openai_payload.get("thinking_budget")
+        if user_budget:
+            try:
+                budget = int(user_budget)
+            except Exception:
+                pass
+        generation_config["thinkingConfig"] = {"thinkingBudget": budget}
+
     if generation_config:
         inner_request["generationConfig"] = generation_config
 
@@ -556,6 +634,9 @@ def translate_gemini_to_openai_response(
         if extracted_calls:
             tool_calls = extracted_calls
             content_text = cleaned_text
+
+    if not content_text and not tool_calls and reasoning_text:
+        content_text = reasoning_text
 
     message: Dict[str, Any] = {
         "role": "assistant",
@@ -665,8 +746,18 @@ def translate_gemini_stream_event(
 class AntigravityClient:
     """HTTP Client executing requests against Google Code Assist backend."""
 
-    def __init__(self, auth_manager: Optional[AntigravityAuthManager] = None) -> None:
+    def __init__(
+        self,
+        auth_manager: Optional[AntigravityAuthManager] = None,
+        model_discovery: Optional[ModelDiscoveryManager] = None,
+    ) -> None:
         self.auth_manager = auth_manager or AntigravityAuthManager()
+        self.model_discovery = model_discovery or ModelDiscoveryManager(self.auth_manager)
+        try:
+            from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+        except ImportError:
+            from bridge.account_pool import AntigravityAccountPoolManager
+        self.account_pool = AntigravityAccountPoolManager(storage_path=self.auth_manager.auth_file)
         self._http = httpx.AsyncClient(timeout=120.0)
 
     async def close(self) -> None:
@@ -677,141 +768,229 @@ class AntigravityClient:
         openai_payload: Dict[str, Any],
         bearer_token: str = "",
     ) -> Dict[str, Any]:
-        """Execute a non-streaming chat completion."""
-        creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
-        envelope = build_code_assist_request(openai_payload, creds.project_id)
-        headers = build_antigravity_headers(creds.access_token, creds.project_id)
+        """Execute a non-streaming chat completion with multi-account auto-failover."""
+        attempted_emails = set()
+        accounts = self.account_pool.list_accounts()
+        max_attempts = max(1, len(accounts)) if not bearer_token else 1
+        last_error = None
 
-        url = f"{CODE_ASSIST_BASE_URL}:generateContent"
-        resp = await self._http.post(url, json=envelope, headers=headers)
-        if resp.status_code != 200:
-            logger.warning("Primary Code Assist endpoint returned %s, trying fallback", resp.status_code)
-            fallback_url = f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent"
-            resp = await self._http.post(fallback_url, json=envelope, headers=headers)
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"Antigravity Code Assist failed with HTTP {resp.status_code}: {resp.text}"
-                )
+        for attempt in range(max_attempts):
+            if not bearer_token:
+                if attempted_emails:
+                    next_acc = self.account_pool.get_account_for_service("llm", exclude_emails=attempted_emails)
+                    if not next_acc:
+                        break
+                    creds = self.auth_manager.resolve_valid_credentials(bearer_token=next_acc.email)
+                else:
+                    chosen_acc = self.account_pool.get_account_for_service("llm")
+                    if chosen_acc:
+                        creds = self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
+                    else:
+                        creds = self.auth_manager.resolve_valid_credentials(bearer_token="")
+            else:
+                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
 
-        gemini_data = resp.json()
-        requested_model = openai_payload.get("model") or "gemini-3.7-flash"
-        return translate_gemini_to_openai_response(gemini_data, requested_model)
+            if not creds:
+                break
+
+            current_email = (creds.email or "default").strip().lower()
+            attempted_emails.add(current_email)
+
+            # Apply micro-spacing guard to avoid rapid concurrency bursts
+            self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
+
+            envelope = build_code_assist_request(openai_payload, creds.project_id, self.model_discovery)
+            headers = build_antigravity_headers(creds.access_token, creds.project_id)
+
+            url = f"{CODE_ASSIST_BASE_URL}:generateContent"
+            try:
+                resp = await self._http.post(url, json=envelope, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning("Primary Code Assist endpoint returned %s, trying fallback", resp.status_code)
+                    fallback_url = f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent"
+                    resp = await self._http.post(fallback_url, json=envelope, headers=headers)
+
+                # Single-account RandExpBackoff retry on 429
+                if resp.status_code == 429 and max_attempts <= 1:
+                    import random
+                    for retry_idx in range(2):
+                        backoff_delay = 1.5 * (2 ** retry_idx) + random.uniform(0.2, 0.6)
+                        logger.info("Single-account rate limit: waiting %.2fs before RandExpBackoff retry %d...", backoff_delay, retry_idx + 1)
+                        await asyncio.sleep(backoff_delay)
+                        resp = await self._http.post(url, json=envelope, headers=headers)
+                        if resp.status_code == 200:
+                            break
+
+                if resp.status_code == 200:
+                    self.account_pool.record_account_usage(current_email, success=True)
+                    gemini_data = resp.json()
+                    requested_model = openai_payload.get("model") or "gemini-3.7-flash"
+                    return translate_gemini_to_openai_response(gemini_data, requested_model)
+
+                is_failover_code = resp.status_code in {429, 403, 503}
+                if is_failover_code and not bearer_token and attempt < max_attempts - 1:
+                    logger.warning(
+                        "Account '%s' encountered HTTP %d (%s). Auto-failing over to next account in pool...",
+                        current_email, resp.status_code, resp.text[:120]
+                    )
+                    self.account_pool.mark_account_exhausted(
+                        current_email, reason=f"HTTP {resp.status_code}"
+                    )
+                    last_error = f"HTTP {resp.status_code}: {resp.text}"
+                    continue
+                else:
+                    self.account_pool.record_account_usage(current_email, success=False)
+                    raise RuntimeError(
+                        f"Antigravity Code Assist failed with HTTP {resp.status_code}: {resp.text}"
+                    )
+            except Exception as e:
+                last_error = e
+                if not bearer_token and attempt < max_attempts - 1:
+                    logger.warning(
+                        "Attempt %d failed on account '%s' (%s), failing over...",
+                        attempt + 1, current_email, e
+                    )
+                    self.account_pool.mark_account_exhausted(
+                        current_email, reason=str(e)
+                    )
+                    continue
+                raise
+
+        raise RuntimeError(f"All Antigravity accounts in pool exhausted. Last error: {last_error}")
 
     async def stream_chat_completion(
         self,
         openai_payload: Dict[str, Any],
         bearer_token: str = "",
     ) -> AsyncIterator[str]:
-        """Stream chat completion as Server-Sent Events (SSE)."""
-        creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
-        envelope = build_code_assist_request(openai_payload, creds.project_id)
-        headers = build_antigravity_headers(creds.access_token, creds.project_id)
-        headers["Accept"] = "text/event-stream"
+        """Stream chat completion as Server-Sent Events (SSE) with auto-failover on stream connection."""
+        attempted_emails = set()
+        accounts = self.account_pool.list_accounts()
+        max_attempts = max(1, len(accounts)) if not bearer_token else 1
+        last_error = None
 
         stream_id = f"chatcmpl-{uuid.uuid4().hex}"
         requested_model = openai_payload.get("model") or "gemini-3.7-flash"
 
-        url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
+        for attempt in range(max_attempts):
+            if not bearer_token:
+                if attempted_emails:
+                    next_acc = self.account_pool.get_account_for_service("llm", exclude_emails=attempted_emails)
+                    if not next_acc:
+                        break
+                    creds = self.auth_manager.resolve_valid_credentials(bearer_token=next_acc.email)
+                else:
+                    chosen_acc = self.account_pool.get_account_for_service("llm")
+                    if chosen_acc:
+                        creds = self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
+                    else:
+                        creds = self.auth_manager.resolve_valid_credentials(bearer_token="")
+            else:
+                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
 
-        async with self._http.stream("POST", url, json=envelope, headers=headers) as response:
-            if response.status_code != 200:
-                body = await response.aread()
-                # Debug: log payload structure on 400 errors
-                if response.status_code == 400:
-                    contents = envelope.get("request", {}).get("contents", [])
-                    roles = [c.get("role", "?") for c in contents]
-                    # Find consecutive same-role pairs
-                    violations = []
-                    for i in range(1, len(roles)):
-                        if roles[i] == roles[i-1]:
-                            violations.append(f"[{i-1}:{roles[i-1]},{i}:{roles[i]}]")
-                    # Find empty parts
-                    empty_parts = [i for i, c in enumerate(contents) if not c.get("parts")]
-                    # Check for parts with unsupported content
-                    part_types = set()
-                    for c in contents:
-                        for p in c.get("parts", []):
-                            part_types.update(p.keys())
-                    logger.error(
-                        "DEBUG 400: contents=%d, roles_start=%s, roles_end=%s, "
-                        "violations=%s, empty_parts=%s, part_types=%s, "
-                        "model=%s, first_role=%s, last_role=%s",
-                        len(contents),
-                        roles[:5], roles[-5:],
-                        violations[:10] if violations else "none",
-                        empty_parts[:10] if empty_parts else "none",
-                        part_types,
-                        envelope.get("model", "?"),
-                        roles[0] if roles else "?",
-                        roles[-1] if roles else "?",
-                    )
-                    # Dump payload structure (not full content) for analysis
-                    try:
-                        debug_dump = []
-                        for i, c in enumerate(contents):
-                            parts_info = []
-                            for p in c.get("parts", []):
-                                pinfo = {k: (str(v)[:50] if isinstance(v, str) else type(v).__name__)
-                                         for k, v in p.items()}
-                                parts_info.append(pinfo)
-                            debug_dump.append({
-                                "idx": i,
-                                "role": c.get("role"),
-                                "num_parts": len(c.get("parts", [])),
-                                "parts": parts_info,
-                            })
-                        import tempfile
-                        dump_path = os.path.join(
-                            tempfile.gettempdir(), "antigravity_debug_400.json"
-                        )
-                        with open(dump_path, "w", encoding="utf-8") as f:
-                            json.dump(debug_dump, f, indent=2, ensure_ascii=False)
-                        logger.error("DEBUG 400: payload structure dumped to %s", dump_path)
-                    except Exception as dump_err:
-                        logger.error("DEBUG 400: failed to dump: %s", dump_err)
-                raise RuntimeError(
-                    f"Antigravity Code Assist streaming failed with HTTP {response.status_code}: {body.decode('utf-8', 'replace')}"
+            if not creds:
+                break
+
+            current_email = (creds.email or "default").strip().lower()
+            attempted_emails.add(current_email)
+
+            # Apply micro-spacing guard
+            self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
+
+            envelope = build_code_assist_request(openai_payload, creds.project_id, self.model_discovery)
+            headers = build_antigravity_headers(creds.access_token, creds.project_id)
+            headers["Accept"] = "text/event-stream"
+
+            url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
+
+            try:
+                response = await self._http.send(
+                    self._http.build_request("POST", url, json=envelope, headers=headers),
+                    stream=True,
                 )
+                if response.status_code != 200:
+                    fallback_url = f"{FALLBACK_CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
+                    await response.aclose()
+                    response = await self._http.send(
+                        self._http.build_request("POST", fallback_url, json=envelope, headers=headers),
+                        stream=True,
+                    )
 
-            # Emit initial chunk with role once connection is verified
-            initial_chunk = {
-                "id": stream_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": requested_model,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-            }
-            yield f"data: {json.dumps(initial_chunk)}\n\n"
+                if response.status_code == 200:
+                    self.account_pool.record_account_usage(current_email, success=True)
+                    initial_chunk = {
+                        "id": stream_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": requested_model,
+                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(initial_chunk)}\n\n"
 
-            buffer = ""
-            async for raw_chunk in response.aiter_text():
-                # Normalize line endings: Google Code Assist SSE uses \r\r\n instead of \n\n
-                buffer += raw_chunk.replace("\r\n", "\n").replace("\r", "\n")
-                while "\n\n" in buffer:
-                    event_block, buffer = buffer.split("\n\n", 1)
-                    for line in event_block.split("\n"):
-                        line = line.strip()
-                        if line.startswith("data:"):
-                            raw_json = line[5:].strip()
-                            if not raw_json or raw_json == "[DONE]":
-                                continue
-                            try:
-                                event_obj = json.loads(raw_json)
-                                chunk = translate_gemini_stream_event(
-                                    event_obj, requested_model, stream_id
-                                )
-                                if chunk:
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                            except Exception as e:
-                                logger.debug("Failed to parse SSE event: %s", e)
+                    buffer = ""
+                    try:
+                        async for raw_chunk in response.aiter_text():
+                            buffer += raw_chunk.replace("\r\n", "\n").replace("\r", "\n")
+                            while "\n\n" in buffer:
+                                event_block, buffer = buffer.split("\n\n", 1)
+                                for line in event_block.split("\n"):
+                                    line = line.strip()
+                                    if line.startswith("data:"):
+                                        raw_json = line[5:].strip()
+                                        if not raw_json or raw_json == "[DONE]":
+                                            continue
+                                        try:
+                                            event_obj = json.loads(raw_json)
+                                            chunk = translate_gemini_stream_event(
+                                                event_obj, requested_model, stream_id
+                                            )
+                                            if chunk:
+                                                yield f"data: {json.dumps(chunk)}\n\n"
+                                        except Exception as e:
+                                            logger.debug("Failed to parse SSE event: %s", e)
+                    finally:
+                        await response.aclose()
 
-        # Final end chunk
-        final_chunk = {
-            "id": stream_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": requested_model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
-        yield f"data: {json.dumps(final_chunk)}\n\n"
-        yield "data: [DONE]\n\n"
+                    final_chunk = {
+                        "id": stream_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": requested_model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                else:
+                    body = await response.aread()
+                    await response.aclose()
+                    is_failover_code = response.status_code in {429, 403, 503}
+                    if is_failover_code and not bearer_token and attempt < max_attempts - 1:
+                        logger.warning(
+                            "Account '%s' encountered HTTP %d during streaming. Auto-failing over to next account...",
+                            current_email, response.status_code
+                        )
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=f"HTTP {response.status_code}"
+                        )
+                        last_error = f"HTTP {response.status_code}: {body.decode('utf-8', 'replace')}"
+                        continue
+                    else:
+                        self.account_pool.record_account_usage(current_email, success=False)
+                        raise RuntimeError(
+                            f"Antigravity Code Assist streaming failed with HTTP {response.status_code}: {body.decode('utf-8', 'replace')}"
+                        )
+            except Exception as e:
+                last_error = e
+                if not bearer_token and attempt < max_attempts - 1:
+                    logger.warning(
+                        "Stream attempt %d failed on account '%s' (%s), failing over...",
+                        attempt + 1, current_email, e
+                    )
+                    self.account_pool.mark_account_exhausted(
+                        current_email, reason=str(e)
+                    )
+                    continue
+                raise
+
+        raise RuntimeError(f"All Antigravity accounts exhausted for streaming. Last error: {last_error}")

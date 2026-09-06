@@ -19,6 +19,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import threading
 import time
 import urllib.error
@@ -154,15 +155,12 @@ class AntigravityAuthManager:
         return (os.getenv(ENV_CLIENT_SECRET) or "").strip() or DEFAULT_CLIENT_SECRET
 
     def load_all_stored_credentials(self) -> List[AntigravityCredentials]:
-        """Load all stored credentials (multi-account) from auth file and standard locations."""
+        """Load all stored credentials (multi-account) from auth file."""
         if self._auth_file_is_custom:
             candidate_files = [self.auth_file]
         else:
-            candidate_files = [
-                self.auth_file,
-                get_hermes_dir() / "auth" / "antigravity_tokens.json",
-                Path.home() / ".hermes" / "auth" / "antigravity_tokens.json",
-            ]
+            # FIX: Only read from the active profile's auth file
+            candidate_files = [self.auth_file]
         creds_list: List[AntigravityCredentials] = []
         seen_emails: set[str] = set()
 
@@ -192,7 +190,7 @@ class AntigravityAuthManager:
         return creds_list
 
     def load_stored_credentials(self, email: Optional[str] = None) -> Optional[AntigravityCredentials]:
-        """Load credentials from ~/.hermes/auth/antigravity_tokens.json."""
+        """Load credentials from ~/.hermes/auth/antigravity_tokens.json respecting active account."""
         all_creds = self.load_all_stored_credentials()
         if not all_creds:
             return None
@@ -200,6 +198,19 @@ class AntigravityAuthManager:
             for c in all_creds:
                 if c.email.lower() == email.lower():
                     return c
+
+        try:
+            if self.auth_file.is_file():
+                with open(self.auth_file, "r", encoding="utf-8") as f:
+                    raw_data = json.load(f)
+                active_em = (raw_data.get("active_account_email") or "").strip().lower()
+                if active_em:
+                    for c in all_creds:
+                        if c.email.lower() == active_em:
+                            return c
+        except Exception:
+            pass
+
         return all_creds[0]
 
     def save_credentials(self, creds: AntigravityCredentials) -> None:
@@ -207,11 +218,8 @@ class AntigravityAuthManager:
         if self._auth_file_is_custom:
             target_token_files = [self.auth_file]
         else:
-            target_token_files = [
-                self.auth_file,
-                get_hermes_dir() / "auth" / "antigravity_tokens.json",
-                Path.home() / ".hermes" / "auth" / "antigravity_tokens.json",
-            ]
+            # FIX: Only write to the active profile's auth file
+            target_token_files = [self.auth_file]
         try:
             existing_data: Dict[str, Any] = {}
             for tf in target_token_files:
@@ -272,16 +280,8 @@ class AntigravityAuthManager:
                 "updated_at": time.time(),
             }
 
-            # Sync to all auth.json stores (root + profiles)
-            auth_store_targets = [
-                get_hermes_dir() / "auth.json",
-                Path.home() / ".hermes" / "auth.json",
-            ]
-            profiles_dir = get_hermes_dir() / "profiles"
-            if profiles_dir.is_dir():
-                for pdir in profiles_dir.iterdir():
-                    if pdir.is_dir():
-                        auth_store_targets.append(pdir / "auth.json")
+            # FIX: Only save to the current active profile
+            auth_store_targets = [get_hermes_dir() / "auth.json"]
 
             for ast in auth_store_targets:
                 try:
@@ -301,6 +301,17 @@ class AntigravityAuthManager:
                     shutil.move(str(tmp_ast), str(ast))
                 except Exception as e:
                     logger.debug("Failed syncing auth store to %s: %s", ast, e)
+
+            # Sync to AntigravityAccountPoolManager
+            try:
+                try:
+                    from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+                except ImportError:
+                    from bridge.account_pool import AntigravityAccountPoolManager
+                pool = AntigravityAccountPoolManager(storage_path=self.auth_file)
+                pool.add_or_update_account(creds)
+            except Exception as e:
+                logger.debug("Failed registering account to pool: %s", e)
 
         except Exception as e:
             logger.error("Failed to save credentials: %s", e)
@@ -411,6 +422,28 @@ class AntigravityAuthManager:
                         break
 
             if not creds:
+                try:
+                    try:
+                        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+                    except ImportError:
+                        from bridge.account_pool import AntigravityAccountPoolManager
+                    pool = AntigravityAccountPoolManager(storage_path=self.auth_file)
+                    acc = pool.get_next_available_account()
+                    if acc:
+                        creds = AntigravityCredentials(
+                            access_token=acc.access_token,
+                            refresh_token=acc.refresh_token,
+                            expires_at=acc.expires_at,
+                            email=acc.email,
+                            project_id=acc.project_id,
+                            managed_project_id=acc.managed_project_id,
+                            tier_id=acc.tier_id,
+                            source=acc.source,
+                        )
+                except Exception as e:
+                    logger.debug("Account pool lookup fell back: %s", e)
+
+            if not creds:
                 creds = self.load_stored_credentials()
             if not creds:
                 creds = self.discover_local_tokens()
@@ -447,14 +480,30 @@ class AntigravityAuthManager:
 
         # Try loadCodeAssist
         try:
+            try:
+                from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                headers = AntigravityFingerprint.build_headers(creds.access_token)
+            except ImportError:
+                try:
+                    from bridge.fingerprint import AntigravityFingerprint
+                    headers = AntigravityFingerprint.build_headers(creds.access_token)
+                except Exception:
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {creds.access_token}",
+                        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
+                        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
+                        "Client-Metadata": json.dumps({
+                            "ideType": "ANTIGRAVITY",
+                            "platform": "PLATFORM_WINDOWS",
+                            "pluginType": "GEMINI",
+                            "applicationVersion": "2.11.0",
+                        }, separators=(",", ":")),
+                    }
             req = urllib.request.Request(
                 LOAD_CODE_ASSIST_ENDPOINT,
                 data=b"{}",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {creds.access_token}",
-                    "User-Agent": "Antigravity/1.0.0 windows/amd64",
-                },
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=10.0) as resp:

@@ -2,27 +2,29 @@ name: antigravity
 display_name: Google Antigravity (OAuth)
 description: Google Gemini & Claude models via Antigravity OAuth local bridge
 version: 1.0.0
-author: Community
+author: Nguyen Phap
 type: model_provider
 entry_point: __init__.py
 models:
-  - id: gemini-3.7-flash
-    name: Gemini 3.7 Flash High
-  - id: gemini-3.7-flash-medium
-    name: Gemini 3.7 Flash Medium
-  - id: gemini-3.7-flash-low
-    name: Gemini 3.7 Flash Low
-  - id: gemini-3.7-pro
-    name: Gemini 3.7 Pro
-  - id: gemini-3.6-flash
-    name: Gemini 3.6 Flash Medium
-  - id: gemini-3.5-flash
-    name: Gemini 3.5 Flash Medium
-  - id: gemini-3.1-pro
-    name: Gemini 3.1 Pro Low
+  - id: gemini-3.7-flash-tiered
+    name: Gemini 3.7 Flash Tiered
   - id: claude-sonnet-4-6
     name: Claude Sonnet 4.6 (Thinking)
-  - id: claude-opus-4-6
+  - id: claude-opus-4-6-thinking
     name: Claude Opus 4.6 (Thinking)
-  - id: gpt-oss-120b
+  - id: gemini-3.6-flash-high
+    name: Gemini 3.6 Flash (High)
+  - id: gemini-3.6-flash-medium
+    name: Gemini 3.6 Flash (Medium)
+  - id: gemini-3.1-pro-high
+    name: Gemini 3.1 Pro (High)
+  - id: gemini-3.1-flash-image
+    name: Gemini 3.1 Flash Image
+  - id: gpt-oss-120b-medium
     name: GPT-OSS 120B (Medium)
+  - id: gemini-2.5-pro
+    name: Gemini 2.5 Pro
+  - id: gemini-3-flash
+    name: Gemini 3 Flash
+  - id: gemini-3.5-flash-low
+    name: Gemini 3.5 Flash (Medium)

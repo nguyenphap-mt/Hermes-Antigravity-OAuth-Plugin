@@ -1,4 +1,37 @@
-﻿__pycache__/
-*.pyc
-*.pyo
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & secrets
 .env
+.env.*
+*.env
+*.key
+*.pem
+*.cert
+
+# Auth tokens & local browser sessions
+flow_token.json
+*.token.json
+*.token
+flow_browser_session/
+*.storage-state.json
+storage-state.json
+camofox/
+
+# Scratch & development artifacts
+scratch/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Databases & local state
+*.sqlite3
+*.db
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db

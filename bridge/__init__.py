@@ -8,18 +8,32 @@ models to Hermes.
 
 from __future__ import annotations
 
-from tools.antigravity_bridge.auth import (
-    AntigravityAuthManager,
-    AntigravityCredentials,
-)
-from tools.antigravity_bridge.client import (
-    AntigravityClient,
-    ANTIGRAVITY_SUPPORTED_MODELS,
-)
-from tools.antigravity_bridge.server import (
-    AntigravityBridgeServer,
-    run_server,
-)
+try:
+    from tools.antigravity_bridge.auth import (
+        AntigravityAuthManager,
+        AntigravityCredentials,
+    )
+    from tools.antigravity_bridge.client import (
+        AntigravityClient,
+        ANTIGRAVITY_SUPPORTED_MODELS,
+    )
+    from tools.antigravity_bridge.server import (
+        AntigravityBridgeServer,
+        run_server,
+    )
+except ImportError:
+    from .auth import (
+        AntigravityAuthManager,
+        AntigravityCredentials,
+    )
+    from .client import (
+        AntigravityClient,
+        ANTIGRAVITY_SUPPORTED_MODELS,
+    )
+    from .server import (
+        AntigravityBridgeServer,
+        run_server,
+    )
 
 __all__ = [
     "AntigravityAuthManager",
