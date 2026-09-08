@@ -602,7 +602,7 @@ async def cancel_flow_login(session_id: str):
 async def refresh_flow_token():
     """Trigger headless background token refresh using the 30-day session cookie."""
     daemon = _get_refresh_daemon()
-    success, result = await daemon.ensure_active_token(min_validity_seconds=86400)
+    success, result = await daemon.ensure_active_token(min_validity_seconds=120)
     svc = _get_auth_service()
     st = svc.get_status()
 
