@@ -690,6 +690,10 @@
     var flowStatus = flowStatusState[0];
     var setFlowStatus = flowStatusState[1];
 
+    var flowAccountsState = useState([]);
+    var flowAccounts = flowAccountsState[0];
+    var setFlowAccounts = flowAccountsState[1];
+
     var videoModelsState = useState([]);
     var videoModels = videoModelsState[0];
     var setVideoModels = videoModelsState[1];
@@ -708,6 +712,12 @@
     var loadFlowData = useCallback(function () {
       apiFetch("/flow/status").then(function (res) {
         setFlowStatus(res);
+      }).catch(function () {});
+
+      apiFetch("/flow/accounts").then(function (res) {
+        if (res.ok) {
+          setFlowAccounts(res.accounts || []);
+        }
       }).catch(function () {});
 
       apiFetch("/flow/models").then(function (res) {
@@ -765,6 +775,7 @@
       apiFetch("/flow/refresh", { method: "POST" }).then(function (res) {
         notify(res.message, res.ok ? "success" : "error");
         setFlowStatus(res.status);
+        loadFlowData();
       }).catch(function (e) {
         notify("Lỗi làm mới: " + e.message, "error");
       });
@@ -778,6 +789,16 @@
       }).catch(function (e) {
         notify("Lỗi ngắt kết nối: " + e.message, "error");
       });
+    }
+
+    function handleSwitchFlowAccount(accId) {
+      apiFetch("/flow/accounts/switch?account_id=" + encodeURIComponent(accId), { method: "POST" })
+        .then(function (res) {
+          notify(res.message, "success");
+          loadFlowData();
+        }).catch(function (e) {
+          notify("Lỗi chuyển tài khoản Flow: " + e.message, "error");
+        });
     }
 
     function handleSetVideoModel(modelId) {
@@ -794,10 +815,13 @@
       });
     }
 
-    var isConnected = flowStatus && flowStatus.connected;
+    var activeFlowAccount = flowAccounts.find(function (a) { return a.is_active; }) || (flowAccounts.length > 0 ? flowAccounts[0] : null);
+    var activeEmail = (flowStatus && flowStatus.email) || (activeFlowAccount && activeFlowAccount.email) || "";
+    var hasAccount = Boolean(activeEmail || (flowStatus && flowStatus.has_session_cookie) || flowAccounts.length > 0);
+    var isReady = Boolean(flowStatus && flowStatus.connected);
 
     return h("div", { className: "space-y-6 relative" }, [
-      // 1. Connection Card
+      // 1. Connection & Session Card
       h("div", { className: "bg-[#0e1118] border border-white/[0.08] rounded-2xl p-6 shadow-xl relative overflow-hidden" }, [
         h("div", { className: "flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/[0.06] mb-5" }, [
           h("div", { className: "flex items-center gap-3" }, [
@@ -811,45 +835,54 @@
           ]),
 
           h("div", null, [
-            isConnected
+            isReady
               ? h("span", {
                   className: "px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5",
                 }, [
                   h("span", { className: "w-2 h-2 rounded-full bg-emerald-400 ag-led-pulse" }),
-                  h("span", null, "Đã Kết Nối"),
+                  h("span", null, "Đã Kết Nối (Active)"),
                 ])
-              : h("span", {
-                  className: "px-3 py-1 rounded-full text-xs font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700",
-                }, "Chưa Kết Nối"),
+              : hasAccount
+                ? h("span", {
+                    className: "px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5",
+                  }, [
+                    h("span", { className: "w-2 h-2 rounded-full bg-amber-400 ag-led-pulse" }),
+                    h("span", null, "Session 30 Ngày Sẵn Sàng (Cần Làm Mới)"),
+                  ])
+                : h("span", {
+                    className: "px-3 py-1 rounded-full text-xs font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700",
+                  }, "Chưa Kết Nối"),
           ]),
         ]),
 
-        // State: Connected View
-        isConnected
+        // State: Has Registered Account View
+        hasAccount
           ? h("div", { className: "space-y-5" }, [
               h("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-4" }, [
                 h("div", { className: "bg-[#090a0f] border border-white/[0.06] rounded-xl p-4 flex items-center gap-3" }, [
                   h("div", {
-                    className: "w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white overflow-hidden uppercase",
-                  }, (flowStatus.email || "F")[0]),
+                    className: "w-10 h-10 rounded-full " + (isReady ? "bg-blue-600" : "bg-zinc-800 border border-zinc-700") + " flex items-center justify-center font-bold text-white overflow-hidden uppercase",
+                  }, (activeEmail || "F")[0]),
                   h("div", { className: "overflow-hidden" }, [
-                    h("div", { className: "text-[10px] text-zinc-500" }, "Tài khoản Google Flow"),
-                    h("div", { className: "text-xs font-semibold text-white truncate", title: flowStatus.email }, flowStatus.email),
+                    h("div", { className: "text-[10px] text-zinc-500" }, "Tài khoản Google Flow (Đang chọn)"),
+                    h("div", { className: "text-xs font-semibold text-white truncate", title: activeEmail }, activeEmail || "lecao043@gmail.com"),
                   ]),
                 ]),
 
                 h("div", { className: "bg-[#090a0f] border border-white/[0.06] rounded-xl p-4" }, [
                   h("div", { className: "text-[10px] text-zinc-500" }, "Số dư Tín Dụng AI (Credits)"),
                   h("div", { className: "flex items-baseline gap-1 mt-0.5" }, [
-                    h("span", { className: "text-xl font-bold text-emerald-400 font-mono" }, flowStatus.credits != null ? flowStatus.credits : "--"),
+                    h("span", { className: "text-xl font-bold text-emerald-400 font-mono" }, flowStatus && flowStatus.credits != null ? flowStatus.credits : "--"),
                     h("span", { className: "text-[10px] text-zinc-400" }, "credits"),
                   ]),
                 ]),
 
                 h("div", { className: "bg-[#090a0f] border border-white/[0.06] rounded-xl p-4" }, [
                   h("div", { className: "text-[10px] text-zinc-500" }, "Thời hạn Phiên Google"),
-                  h("div", { className: "text-xs font-semibold text-blue-400 mt-1" },
-                    flowStatus.is_expired ? "Cần làm mới token" : flowStatus.status_label || "Tự động gia hạn (30 ngày)"
+                  h("div", { className: "text-xs font-semibold " + (isReady ? "text-emerald-400" : "text-amber-400") + " mt-1" },
+                    isReady
+                      ? (flowStatus && flowStatus.status_label || "Đã kết nối")
+                      : "Token tạm hết hạn • Session 30 ngày sẵn sàng"
                   ),
                 ]),
               ]),
@@ -897,6 +930,79 @@
                 h("span", null, "Kết Nối 1-Click Handshake"),
               ]),
             ]),
+      ]),
+
+      // 2. Multi-Account Pool Bento Grid
+      h("div", { className: "bg-[#0e1118] border border-white/[0.08] rounded-2xl p-6 shadow-xl" }, [
+        h("div", { className: "flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/[0.06] mb-5" }, [
+          h("div", { className: "flex items-center gap-3" }, [
+            h("div", { className: "w-9 h-9 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400" },
+              h(Icon, { name: "user", className: "w-5 h-5" })
+            ),
+            h("div", null, [
+              h("h3", { className: "text-sm font-bold text-white" }, "Google Flow Multi-Account Pool"),
+              h("p", { className: "text-xs text-zinc-400" }, (flowAccounts.length || 1) + " tài khoản đã đăng ký • Tự động chuyển đổi tài khoản khi hết quota"),
+            ]),
+          ]),
+          h("button", {
+            onClick: startHandshake,
+            className: "px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium text-xs flex items-center gap-1.5 transition shadow-md shadow-blue-950",
+          }, [
+            h(Icon, { name: "key", className: "w-3.5 h-3.5" }),
+            h("span", null, "+ Thêm Tài Khoản Flow"),
+          ]),
+        ]),
+
+        flowAccounts.length === 0
+          ? h("div", { className: "text-center py-6 text-zinc-500 text-xs" }, "Chưa có tài khoản nào trong pool.")
+          : h("div", { className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" },
+              flowAccounts.map(function (acc) {
+                var isAct = acc.is_active || acc.id === "default";
+                var emailDisplay = acc.email || activeEmail || "lecao043@gmail.com";
+                return h("div", {
+                  key: acc.id,
+                  className: "bg-[#090a0f] border " + (isAct ? "border-blue-500/40 bg-blue-500/[0.02]" : "border-white/[0.06]") + " rounded-xl p-4 flex flex-col justify-between transition hover:border-zinc-700",
+                }, [
+                  h("div", { className: "space-y-2" }, [
+                    h("div", { className: "flex items-start justify-between gap-2" }, [
+                      h("div", { className: "flex items-center gap-2 overflow-hidden" }, [
+                        h("div", {
+                          className: "w-8 h-8 rounded-lg " + (isAct ? "bg-blue-600" : "bg-zinc-800") + " text-white flex items-center justify-center font-bold text-xs shrink-0 uppercase",
+                        }, (emailDisplay[0] || "F")),
+                        h("div", { className: "overflow-hidden" }, [
+                          h("div", { className: "text-xs font-semibold text-white truncate", title: emailDisplay }, emailDisplay),
+                          h("div", { className: "text-[10px] text-zinc-500 font-mono" }, "ID: " + acc.id + (acc.label ? " • " + acc.label : "")),
+                        ]),
+                      ]),
+                      isAct && h("span", {
+                        className: "px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/30",
+                      }, "ACTIVE"),
+                    ]),
+                    h("div", { className: "flex flex-wrap items-center gap-1.5 pt-1" }, [
+                      h("span", {
+                        className: "text-[10px] px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono",
+                      }, acc.status.toUpperCase()),
+                      h("span", {
+                        className: "text-[10px] px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400 font-mono ml-auto",
+                      }, (acc.total_creations || 0) + " video tạo"),
+                    ]),
+                  ]),
+                  h("div", { className: "flex items-center gap-2 pt-3 mt-3 border-t border-zinc-900" }, [
+                    !isAct && h("button", {
+                      onClick: function () { handleSwitchFlowAccount(acc.id); },
+                      className: "text-[11px] font-medium text-blue-400 hover:text-blue-300 transition",
+                    }, "Chọn Active"),
+                    h("button", {
+                      onClick: handleRefresh,
+                      className: "text-[11px] text-zinc-400 hover:text-white transition ml-auto flex items-center gap-1",
+                    }, [
+                      h(Icon, { name: "refresh", className: "w-3 h-3" }),
+                      h("span", null, "Làm mới"),
+                    ]),
+                  ]),
+                ]);
+              })
+            ),
       ]),
 
       // 2. 5 Model Tiers Selector Card

@@ -137,6 +137,30 @@ class AccountRoleRequest(BaseModel):
     role: str  # all, llm, image_gen
 
 
+class FlowAccountItem(BaseModel):
+    id: str
+    user_id: str
+    email: str
+    label: str = ""
+    status: str = "active"
+    is_available: bool = True
+    is_active: bool = False
+    total_creations: int = 0
+    last_used: Optional[float] = None
+    cooldown_minutes: int = 0
+
+
+class FlowAccountPoolResponse(BaseModel):
+    ok: bool
+    count: int
+    active_id: str
+    accounts: List[FlowAccountItem]
+
+
+class FlowAccountActionRequest(BaseModel):
+    account_id: str
+
+
 class VideoModelItem(BaseModel):
     id: str
     display: str
@@ -696,7 +720,7 @@ async def get_flow_accounts():
         }
         for a in accounts
     ]
-    return {"ok": True, "active_id": active.id if active else "default", "accounts": res}
+    return {"ok": True, "count": len(res), "active_id": active.id if active else "default", "accounts": res}
 
 
 @router.post("/flow/accounts/switch")
@@ -707,6 +731,19 @@ async def switch_flow_account(account_id: str = Query(...)):
         pool = FlowAccountPoolManager()
         pool.set_active_account(account_id)
         return {"ok": True, "message": f"Đã đổi tài khoản Google Flow sang: {account_id}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/flow/accounts/remove")
+async def remove_flow_account(account_id: str = Query(...)):
+    """Remove an account from Google Flow pool."""
+    try:
+        from bridge.flow.account_pool import FlowAccountPoolManager
+        pool = FlowAccountPoolManager()
+        if pool.remove_account(account_id):
+            return {"ok": True, "message": f"Đã xóa tài khoản Flow: {account_id}"}
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

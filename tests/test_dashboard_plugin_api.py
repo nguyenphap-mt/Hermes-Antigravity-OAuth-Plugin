@@ -82,6 +82,14 @@ class TestDashboardPluginAPI:
         assert "has_session_cookie" in data
         assert "status_label" in data
 
+    def test_flow_accounts_endpoint(self, client):
+        resp = client.get("/api/plugins/antigravity/flow/accounts")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert "accounts" in data
+        assert "active_id" in data
+
     def test_flow_models_endpoint(self, client):
         resp = client.get("/api/plugins/antigravity/flow/models")
         assert resp.status_code == 200
