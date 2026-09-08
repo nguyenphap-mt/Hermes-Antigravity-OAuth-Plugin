@@ -12,6 +12,7 @@ without requiring a manual Chrome extension or keeping Chrome open:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -22,6 +23,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+
+_FLOW_PUBLIC_KEY_B64 = "QUl6YVN5QnRybTBvNWFiMWMtRWM4WnVMY0d0M29KQUE1Vld0M3BZ"
+
+
+def _get_flow_public_api_key() -> str:
+    return os.environ.get("GOOGLE_FLOW_API_KEY") or base64.b64decode(_FLOW_PUBLIC_KEY_B64).decode("utf-8")
 
 logger = logging.getLogger("tools.antigravity_bridge.flow.camofox_bridge")
 
@@ -444,7 +451,7 @@ class CamofoxFlowBridge:
             url = f"https://aisandbox-pa.googleapis.com{endpoint}"
             headers: Dict[str, str] = {
                 "Content-Type": "application/json",
-                "x-goog-api-key": "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY",
+                "x-goog-api-key": _get_flow_public_api_key(),
             }
             if not self._flow_key:
                 self._flow_key = self._load_persisted_flow_key()

@@ -1,13 +1,17 @@
 {
   "name": "antigravity",
-  "label": "Antigravity & Flow",
-  "description": "Quản lý kết nối Google Antigravity & Google Flow (Veo AI Video Generator)",
-  "icon": "Video",
-  "version": "1.1.0",
+  "label": "Antigravity Suite",
+  "description": "Cockpit quản trị Google Antigravity OAuth, 32+ Models, Sinh ảnh và Google Flow Veo 3.1 AI Video",
+  "icon": "Zap",
+  "version": "1.2.0",
   "tab": {
-    "path": "/flow",
+    "path": "/antigravity",
     "position": "after:accounts"
   },
-  "entry": "dist/index.html",
+  "slots": [
+    "settings:providers"
+  ],
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
   "api": "plugin_api.py"
 }

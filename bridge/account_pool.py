@@ -75,6 +75,22 @@ class AntigravityAccount:
     failure_count: int = 0                   # Consecutive failure count
 
     @property
+    def role(self) -> str:
+        return self.assigned_role
+
+    @role.setter
+    def role(self, value: str):
+        self.assigned_role = value
+
+    @property
+    def request_count(self) -> int:
+        return self.total_requests
+
+    @request_count.setter
+    def request_count(self, value: int):
+        self.total_requests = value
+
+    @property
     def is_expired(self) -> bool:
         """Check if access token has expired or is close to expiring (within 2 min)."""
         if not self.access_token:

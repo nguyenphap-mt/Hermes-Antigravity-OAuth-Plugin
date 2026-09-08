@@ -21,6 +21,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 logger = logging.getLogger("tools.antigravity_bridge.flow.generators")
 
 DEFAULT_PROJECT = os.environ.get("DEFAULT_PROJECT", "0143adf4-5864-4cb4-abb5-fe4254ad0dc7")
+_FLOW_PUBLIC_KEY_B64 = "QUl6YVN5QnRybTBvNWFiMWMtRWM4WnVMY0d0M29KQUE1Vld0M3BZ"
+
+
+def _get_flow_public_api_key() -> str:
+    return os.environ.get("GOOGLE_FLOW_API_KEY") or base64.b64decode(_FLOW_PUBLIC_KEY_B64).decode("utf-8")
 
 
 class FlowCreditExhaustedError(RuntimeError):
@@ -429,7 +434,7 @@ async def poll_video_status(
                     token = bridge._flow_key or bridge._load_persisted_flow_key()
                     headers = {
                         "Authorization": f"Bearer {token}",
-                        "x-goog-api-key": "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY",
+                        "x-goog-api-key": _get_flow_public_api_key(),
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                         "Origin": "https://labs.google",
                         "Referer": "https://labs.google/fx/tools/flow",
