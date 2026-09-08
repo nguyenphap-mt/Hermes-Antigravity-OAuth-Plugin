@@ -154,6 +154,15 @@ def main():
                 if f.is_file():
                     shutil.copy2(f, vgen_dest / f.name)
 
+        # AI Video Generation skill (Google Flow Veo 3.1 & Omni)
+        skill_src = PACKAGE_DIR / "skills" / "ai-video-generation"
+        if skill_src.exists():
+            h_skill = h / "skills" / "ai-video-generation"
+            h_skill.mkdir(parents=True, exist_ok=True)
+            for sf in skill_src.glob("*"):
+                if sf.is_file():
+                    shutil.copy2(sf, h_skill / sf.name)
+
         # Configure config.yaml
         # NOTE: video_gen is ONLY activated on the main profile (hermes-main / root homes)
         is_main_profile = "profiles" not in h.parts
