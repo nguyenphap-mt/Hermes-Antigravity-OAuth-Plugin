@@ -691,12 +691,26 @@ def cmd_flow_login(args: argparse.Namespace) -> int:
                     err = None
                     session_raw = None
                     try:
-                        session_data = page.evaluate("() => fetch('/fx/api/auth/session').then(r => r.json()).catch(() => null)")
-                        if session_data and isinstance(session_data, dict):
-                            token = session_data.get("access_token") or session_data.get("accessToken") or session_data.get("token")
-                            email = session_data.get("user", {}).get("email")
-                            err = session_data.get("error")
-                            session_raw = session_data
+                        for p_tab in reversed(ctx.pages):
+                            try:
+                                if "labs.google" in p_tab.url:
+                                    session_data = p_tab.evaluate("() => fetch('/fx/api/auth/session').then(r => r.json()).catch(() => null)")
+                                    if session_data and isinstance(session_data, dict):
+                                        token = session_data.get("access_token") or session_data.get("accessToken") or session_data.get("token")
+                                        email = session_data.get("user", {}).get("email")
+                                        err = session_data.get("error")
+                                        session_raw = session_data
+                                        if token and email and not err:
+                                            break
+                            except Exception:
+                                pass
+                        if not token and ctx.pages:
+                            session_data = ctx.pages[-1].evaluate("() => fetch('/fx/api/auth/session').then(r => r.json()).catch(() => null)")
+                            if session_data and isinstance(session_data, dict):
+                                token = session_data.get("access_token") or session_data.get("accessToken") or session_data.get("token")
+                                email = session_data.get("user", {}).get("email")
+                                err = session_data.get("error")
+                                session_raw = session_data
                     except Exception:
                         pass
 
