@@ -267,6 +267,12 @@ def main():
                 if sf.is_file():
                     shutil.copy2(sf, ws_skill / sf.name)
 
+        # Copy manage.py and Login_Google_Flow.cmd to workspace root
+        if (PACKAGE_DIR / "manage.py").is_file():
+            shutil.copy2(PACKAGE_DIR / "manage.py", ws / "manage.py")
+        if (PACKAGE_DIR / "Login_Google_Flow.cmd").is_file():
+            shutil.copy2(PACKAGE_DIR / "Login_Google_Flow.cmd", ws / "Login_Google_Flow.cmd")
+
     # 3. Install Git post-merge hooks for update resilience
     print("\n[4/5] Installing Git post-merge auto-resync hooks...")
     installer_path = (PACKAGE_DIR / "install.py").resolve()
