@@ -9,7 +9,10 @@ All selectors target the labs.google/fx/tools/flow interface.
 # =============================================================================
 
 FLOW_BASE_URL = "https://labs.google/fx/tools/flow"
+FLOW_PRIMARY_URL = "https://flow.google.com/"
+FLOW_STUDIO_URL = "https://flow.google.com/"
 FLOW_EDITOR_URL = "https://labs.google/fx/tools/flow/create"
+FLOW_URLS = ["https://flow.google.com/", "https://labs.google/fx/tools/flow"]
 
 # Google account avatar — presence indicates logged in
 AVATAR_SELECTOR = 'img[alt*="Google Account"], button[aria-label*="Google Account"]'

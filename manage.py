@@ -674,8 +674,10 @@ def cmd_flow_login(args: argparse.Namespace) -> int:
                     viewport=None,
                 )
 
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
+            except Exception:
+                page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=45000)
             print("[+] CỬA SỔ TRÌNH DUYỆT ĐÃ MỞ TRÊN MÀN HÌNH!")
             print("    👉 Vui lòng nhấn 'Sign In' / 'Create with Google Flow' để đăng nhập.")
             print("    Hệ thống đang tự động theo dõi để lưu Cookies & Token...")

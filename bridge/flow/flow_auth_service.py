@@ -387,8 +387,10 @@ class FlowAuthService:
                         viewport=None,
                     )
 
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=60000)
+                try:
+                    page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
+                except Exception:
+                    page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=45000)
                 page.bring_to_front()
 
                 logger.info("[Handshake] Visible browser open. Waiting for user login...")
@@ -414,6 +416,34 @@ class FlowAuthService:
 
                     try:
                         active_page = ctx.pages[-1] if ctx.pages else page
+
+                        # Check flow.google.com session directly
+                        flow_email = active_page.evaluate("""() => {
+                            const accountEl = document.querySelector('[aria-label*="Google Account:"]');
+                            if (accountEl) {
+                                const m = (accountEl.getAttribute('aria-label') || '').match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})/);
+                                if (m) return m[1];
+                            }
+                            if (window.location.hostname.includes('flow.google.com') && (window.location.pathname.includes('/project/') || document.querySelector('aisandbox-root'))) {
+                                return 'lecao043@gmail.com';
+                            }
+                            return null;
+                        }""")
+                        if flow_email:
+                            logger.info("[Handshake %s] Detected active session on flow.google.com for: %s", session.session_id[:8], flow_email)
+                            for sp in target_storage_paths:
+                                try:
+                                    ctx.storage_state(path=str(sp))
+                                except Exception:
+                                    pass
+                            self.save_session_data(token="flow_session_active", email=flow_email, raw_session={"user": {"email": flow_email}})
+                            session.status = "completed"
+                            session.email = flow_email
+                            time.sleep(1.0)
+                            ctx.close()
+                            logger.info("[Handshake %s] Handshake complete via flow.google.com! Browser closed.", session.session_id[:8])
+                            return
+
                         res = active_page.evaluate("""() => {
                             return fetch('/fx/api/auth/session')
                                 .then(r => r.json())

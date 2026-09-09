@@ -34,8 +34,9 @@ logger = logging.getLogger("tools.antigravity_bridge.flow.camofox_bridge")
 
 # Defaults
 DEFAULT_CAMOFOX_URL = "http://127.0.0.1:9377"
-FLOW_BASE_URL = "https://labs.google/"
-FLOW_EDITOR_URL = "https://labs.google/fx/tools/flow/create"
+FLOW_BASE_URL = "https://flow.google.com/"
+FLOW_LEGACY_BASE_URL = "https://labs.google/"
+FLOW_EDITOR_URL = "https://flow.google.com/"
 FLOW_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 
 DEFAULT_USER_ID = "google_flow_user"
@@ -347,8 +348,8 @@ class CamofoxFlowBridge:
         # Ensure current tab origin matches https://labs.google
         try:
             current_origin = await self.evaluate("window.location.origin", timeout=5)
-            if current_origin != "https://labs.google":
-                await self.navigate("https://labs.google/")
+            if current_origin not in ("https://flow.google.com", "https://labs.google"):
+                await self.navigate("https://flow.google.com/")
                 await asyncio.sleep(2)
         except Exception as ex:
             logger.debug("Origin check warning before reCAPTCHA: %s", ex)
