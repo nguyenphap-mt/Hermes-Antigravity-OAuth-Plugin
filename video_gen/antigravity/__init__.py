@@ -152,6 +152,9 @@ class AntigravityVideoGenProvider(VideoGenProvider):
     def is_available(self) -> bool:
         """Return True when Google Flow has valid credentials or active session."""
         try:
+            profile_dir = Path.home() / ".hermes" / "flow_browser_session"
+            if profile_dir.is_dir():
+                return True
             try:
                 from bridge.flow.flow_auth_service import FlowAuthService
             except ImportError:
@@ -289,6 +292,38 @@ class AntigravityVideoGenProvider(VideoGenProvider):
 
             token_ok, token_val = self._run_async(_ensure_token())
             if not token_ok and not token_val:
+                # Fallback: Autonomous headless browser generation directly via flow.google.com session
+                try:
+                    try:
+                        from bridge.flow.flow_browser_generator import FlowBrowserGenerator
+                    except ImportError:
+                        from tools.antigravity_bridge.flow.flow_browser_generator import FlowBrowserGenerator
+
+                    media_dir = _h_home / "media" / "flow"
+                    media_dir.mkdir(parents=True, exist_ok=True)
+                    slug = re.sub(r"[^\w\s-]", "", prompt)[:35].strip().replace(" ", "_") or "video"
+                    local_path = media_dir / f"flow_{slug}_{int(time.time())}.mp4"
+
+                    bg = FlowBrowserGenerator()
+                    ok, res_path = bg.generate_video_sync(prompt=prompt, output_path=local_path, duration=chosen_duration)
+                    if ok and os.path.exists(res_path):
+                        return success_response(
+                            video=res_path,
+                            model=active_model_id,
+                            prompt=prompt,
+                            modality="text" if not image_url else "image",
+                            aspect_ratio="16:9" if chosen_aspect == "landscape" else "9:16",
+                            duration=chosen_duration,
+                            provider="antigravity",
+                            extra={
+                                "resolution": "720p",
+                                "local_file": res_path,
+                                "mode": "browser_session",
+                            },
+                        )
+                except Exception as browser_err:
+                    logger.warning("Browser fallback generation attempt failed: %s", browser_err)
+
                 return error_response(
                     error="Google Flow session expired or not authenticated. Please run 1-Click Handshake on Dashboard or CLI.",
                     error_type="AuthenticationError",
