@@ -252,7 +252,7 @@ class AntigravityAuthManager:
                         json.dump(out_data, f, indent=2)
                     if os.name != "nt":
                         os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-                    shutil.move(str(tmp_path), str(tf))
+                    os.replace(str(tmp_path), str(tf))
                 except Exception as e:
                     logger.debug("Failed saving token file to %s: %s", tf, e)
 
@@ -298,7 +298,7 @@ class AntigravityAuthManager:
                     tmp_ast = ast.with_suffix(".tmp")
                     with open(tmp_ast, "w", encoding="utf-8") as af:
                         json.dump(store, af, indent=2)
-                    shutil.move(str(tmp_ast), str(ast))
+                    os.replace(str(tmp_ast), str(ast))
                 except Exception as e:
                     logger.debug("Failed syncing auth store to %s: %s", ast, e)
 

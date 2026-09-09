@@ -78,42 +78,61 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     print(f"[*] Starting Antigravity Bridge daemon on http://{host}:{port}...")
 
-    log_fd = open(log_file, "a", encoding="utf-8")
-
-    cmd = [
-        sys.executable,
-        "-u",
-        "-c",
-        f"import sys; sys.path.insert(0, r'{PLUGIN_ROOT}'); sys.path.insert(0, r'{REPO_ROOT}'); from bridge.server import run_server; run_server(host='{host}', port={port})",
-    ]
+    runner_code = (
+        f"import sys, os\n"
+        f"for p in [r'{PLUGIN_ROOT}', r'{REPO_ROOT}']:\n"
+        f"    if p not in sys.path: sys.path.insert(0, p)\n"
+        f"try:\n"
+        f"    log_fd = open(r'{log_file}', 'a', encoding='utf-8')\n"
+        f"    sys.stdout = log_fd\n"
+        f"    sys.stderr = log_fd\n"
+        f"except Exception:\n"
+        f"    pass\n"
+        f"try:\n"
+        f"    from bridge.server import run_server\n"
+        f"except ImportError:\n"
+        f"    from tools.antigravity_bridge.server import run_server\n"
+        f"run_server(host='{host}', port={port})\n"
+    )
 
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
 
-    flags = 0
+    proc = None
     if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200 | 0x01000000
-
-    try:
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-c", runner_code],
+                creationflags=flags | 0x01000000,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                env=env,
+                cwd=str(PLUGIN_ROOT),
+            )
+        except OSError:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-c", runner_code],
+                creationflags=flags,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                env=env,
+                cwd=str(PLUGIN_ROOT),
+            )
+    else:
         proc = subprocess.Popen(
-            cmd,
-            cwd=str(PLUGIN_ROOT),
-            stdout=log_fd,
-            stderr=log_fd,
+            [sys.executable, "-u", "-c", runner_code],
+            start_new_session=True,
             stdin=subprocess.DEVNULL,
-            creationflags=flags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
             env=env,
-        )
-    except Exception:
-        flags = 0x00000008 | 0x00000200
-        proc = subprocess.Popen(
-            cmd,
             cwd=str(PLUGIN_ROOT),
-            stdout=log_fd,
-            stderr=log_fd,
-            stdin=subprocess.DEVNULL,
-            creationflags=flags,
-            env=env,
         )
 
     with open(pid_file, "w", encoding="utf-8") as f:
@@ -133,29 +152,57 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
-    pid_file = get_pid_file()
-    if not pid_file.is_file():
-        print("[*] No active bridge PID file found.")
-        return 0
+    port = getattr(args, "port", None) or DEFAULT_BRIDGE_PORT
+    stopped_any = False
 
+    # 1. Clean up known PID files across profiles
+    candidate_pid_files = [
+        get_pid_file(),
+        Path.home() / "AppData" / "Local" / "hermes" / "bridge" / "antigravity" / "bridge.pid",
+        Path.home() / ".hermes" / "bridge" / "antigravity" / "bridge.pid",
+    ]
+    for p_file in candidate_pid_files:
+        if p_file.is_file():
+            try:
+                with open(p_file, "r", encoding="utf-8") as f:
+                    pid = int(f.read().strip())
+                if pid > 0:
+                    if sys.platform == "win32":
+                        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+                    else:
+                        os.kill(pid, signal.SIGTERM)
+                    print(f"[+] Stopped Antigravity Bridge (PID: {pid})")
+                    stopped_any = True
+            except Exception:
+                pass
+            p_file.unlink(missing_ok=True)
+
+    # 2. Terminate any lingering process bound to bridge port
     try:
-        with open(pid_file, "r", encoding="utf-8") as f:
-            pid = int(f.read().strip())
+        import psutil
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == port and conn.pid:
+                try:
+                    p = psutil.Process(conn.pid)
+                    p.kill()
+                    print(f"[+] Killed lingering process {conn.pid} on port {port}")
+                    stopped_any = True
+                except Exception:
+                    pass
     except Exception:
-        pid = 0
+        pass
 
-    if pid > 0:
-        try:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
-            else:
-                os.kill(pid, signal.SIGTERM)
-            print(f"[+] Stopped Antigravity Bridge (PID: {pid})")
-        except Exception as e:
-            print(f"[*] Process {pid} not running or failed to stop: {e}")
-
-    pid_file.unlink(missing_ok=True)
+    if not stopped_any:
+        print(f"[*] No active bridge process was running on port {port}.")
     return 0
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Restart the Antigravity Local Bridge daemon."""
+    print("[*] Restarting Antigravity Bridge...")
+    cmd_stop(args)
+    time.sleep(1.0)
+    return cmd_start(args)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -1076,6 +1123,10 @@ def main() -> int:
 
     subparsers.add_parser("stop", help="Stop the bridge server")
 
+    p_restart = subparsers.add_parser("restart", help="Restart the bridge server daemon")
+    p_restart.add_argument("--port", type=int, default=DEFAULT_BRIDGE_PORT, help="Port to listen on")
+    p_restart.add_argument("--host", type=str, default=DEFAULT_BRIDGE_HOST, help="Host to bind")
+
     p_status = subparsers.add_parser("status", help="Show bridge and auth status")
     p_status.add_argument("--port", type=int, default=DEFAULT_BRIDGE_PORT)
     p_status.add_argument("--host", type=str, default=DEFAULT_BRIDGE_HOST)
@@ -1139,6 +1190,7 @@ def main() -> int:
         "image": cmd_image,
         "start": cmd_start,
         "stop": cmd_stop,
+        "restart": cmd_restart,
         "status": cmd_status,
         "login": cmd_login,
         "accounts": cmd_accounts,

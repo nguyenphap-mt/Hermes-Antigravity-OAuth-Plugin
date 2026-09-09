@@ -168,7 +168,7 @@ class AntigravityAccountPoolManager:
                 json.dump(data, f, indent=2)
             if os.name != "nt":
                 os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-            shutil.move(str(tmp), str(self.storage_path))
+            os.replace(str(tmp), str(self.storage_path))
         except Exception as e:
             logger.error("Failed saving account pool to %s: %s", self.storage_path, e)
             if tmp.exists():
