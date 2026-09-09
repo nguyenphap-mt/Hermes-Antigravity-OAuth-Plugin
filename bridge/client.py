@@ -771,11 +771,13 @@ class AntigravityClient:
         """Execute a non-streaming chat completion with multi-account auto-failover."""
         attempted_emails = set()
         accounts = self.account_pool.list_accounts()
-        max_attempts = max(1, len(accounts)) if not bearer_token else 1
+        max_attempts = max(1, len(accounts))
         last_error = None
 
         for attempt in range(max_attempts):
-            if not bearer_token:
+            if attempt == 0 and bearer_token:
+                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
+            else:
                 if attempted_emails:
                     next_acc = self.account_pool.get_account_for_service("llm", exclude_emails=attempted_emails)
                     if not next_acc:
@@ -787,8 +789,6 @@ class AntigravityClient:
                         creds = self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
                     else:
                         creds = self.auth_manager.resolve_valid_credentials(bearer_token="")
-            else:
-                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
 
             if not creds:
                 break
@@ -828,7 +828,7 @@ class AntigravityClient:
                     return translate_gemini_to_openai_response(gemini_data, requested_model)
 
                 is_failover_code = resp.status_code in {429, 403, 503}
-                if is_failover_code and not bearer_token and attempt < max_attempts - 1:
+                if is_failover_code and attempt < max_attempts - 1:
                     logger.warning(
                         "Account '%s' encountered HTTP %d (%s). Auto-failing over to next account in pool...",
                         current_email, resp.status_code, resp.text[:120]
@@ -845,7 +845,7 @@ class AntigravityClient:
                     )
             except Exception as e:
                 last_error = e
-                if not bearer_token and attempt < max_attempts - 1:
+                if attempt < max_attempts - 1:
                     logger.warning(
                         "Attempt %d failed on account '%s' (%s), failing over...",
                         attempt + 1, current_email, e
@@ -866,14 +866,16 @@ class AntigravityClient:
         """Stream chat completion as Server-Sent Events (SSE) with auto-failover on stream connection."""
         attempted_emails = set()
         accounts = self.account_pool.list_accounts()
-        max_attempts = max(1, len(accounts)) if not bearer_token else 1
+        max_attempts = max(1, len(accounts))
         last_error = None
 
         stream_id = f"chatcmpl-{uuid.uuid4().hex}"
         requested_model = openai_payload.get("model") or "gemini-3.7-flash"
 
         for attempt in range(max_attempts):
-            if not bearer_token:
+            if attempt == 0 and bearer_token:
+                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
+            else:
                 if attempted_emails:
                     next_acc = self.account_pool.get_account_for_service("llm", exclude_emails=attempted_emails)
                     if not next_acc:
@@ -885,8 +887,6 @@ class AntigravityClient:
                         creds = self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
                     else:
                         creds = self.auth_manager.resolve_valid_credentials(bearer_token="")
-            else:
-                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
 
             if not creds:
                 break
@@ -965,7 +965,7 @@ class AntigravityClient:
                     body = await response.aread()
                     await response.aclose()
                     is_failover_code = response.status_code in {429, 403, 503}
-                    if is_failover_code and not bearer_token and attempt < max_attempts - 1:
+                    if is_failover_code and attempt < max_attempts - 1:
                         logger.warning(
                             "Account '%s' encountered HTTP %d during streaming. Auto-failing over to next account...",
                             current_email, response.status_code
@@ -982,7 +982,7 @@ class AntigravityClient:
                         )
             except Exception as e:
                 last_error = e
-                if not bearer_token and attempt < max_attempts - 1:
+                if attempt < max_attempts - 1:
                     logger.warning(
                         "Stream attempt %d failed on account '%s' (%s), failing over...",
                         attempt + 1, current_email, e
