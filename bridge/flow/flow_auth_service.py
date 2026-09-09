@@ -225,11 +225,15 @@ class FlowAuthService:
             if is_prod:
                 for fb in [
                     Path.home() / ".hermes" / "auth" / "flow_token.json",
+                    Path.home() / ".hermes" / "flow_token.json",
                     Path.home() / ".camofox" / "flow_token.json",
                 ]:
-                    if fb.resolve() != target.resolve():
-                        fb.parent.mkdir(parents=True, exist_ok=True)
-                        fb.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    try:
+                        if fb.resolve() != target.resolve():
+                            fb.parent.mkdir(parents=True, exist_ok=True)
+                            fb.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
 
             # Update account pool if available
             try:
@@ -417,11 +421,12 @@ class FlowAuthService:
                         }""")
 
                         if res and isinstance(res, dict):
-                            token = res.get("accessToken") or res.get("token")
+                            token = res.get("access_token") or res.get("accessToken") or res.get("token")
                             user = res.get("user") or {}
                             email = user.get("email")
+                            err = res.get("error")
 
-                            if token and email:
+                            if token and email and not err:
                                 logger.info("[Handshake %s] Detected successful login for: %s", session.session_id[:8], email)
 
                                 for sp in target_storage_paths:

@@ -99,11 +99,14 @@ class FlowRefreshDaemon:
                         except Exception:
                             pass
                     if isinstance(res, dict):
-                        token = res.get("accessToken") or res.get("token")
+                        token = res.get("access_token") or res.get("accessToken") or res.get("token")
                         email = res.get("user", {}).get("email") or ""
-                        if token:
+                        err = res.get("error")
+                        if token and not err:
                             FlowAuthService.get_instance().save_session_data(token, email, res)
                             return True, token
+                        elif err:
+                            logger.warning("Camofox session returned error: %s", err)
         except Exception as e:
             logger.debug("Camofox bridge headless refresh error: %s", e)
 
@@ -143,7 +146,8 @@ class FlowRefreshDaemon:
                             res = json.loads(body_text)
                             token = res.get("access_token") or res.get("accessToken") or res.get("token")
                             email = res.get("user", {}).get("email") or ""
-                            if token:
+                            err = res.get("error")
+                            if token and not err:
                                 for sp in target_storage_paths:
                                     try:
                                         ctx.storage_state(path=str(sp))
@@ -169,7 +173,8 @@ class FlowRefreshDaemon:
                             if res and isinstance(res, dict):
                                 token = res.get("access_token") or res.get("accessToken") or res.get("token")
                                 email = res.get("user", {}).get("email") or ""
-                                if token:
+                                err = res.get("error")
+                                if token and not err:
                                     # Sync storage state
                                     for sp in target_storage_paths:
                                         try:
