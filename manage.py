@@ -675,41 +675,64 @@ def cmd_flow_login(args: argparse.Namespace) -> int:
                 )
 
             try:
-                page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
-            except Exception:
                 page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=45000)
+            except Exception:
+                pass
             print("[+] CỬA SỔ TRÌNH DUYỆT ĐÃ MỞ TRÊN MÀN HÌNH!")
-            print("    👉 Vui lòng nhấn 'Sign In' / 'Create with Google Flow' để đăng nhập.")
-            print("    Hệ thống đang tự động theo dõi để lưu Cookies & Token...")
+            print("    👉 Vui lòng đăng nhập tài khoản Google của bạn trên cửa sổ Chrome vừa mở.")
+            print("    👉 Sau khi đăng nhập và được chuyển về giao diện Google Flow, cửa sổ sẽ tự động lưu cấu hình và đóng lại.")
+            print("    Hệ thống đang tự động theo dõi phiên xác thực...")
 
             start = time.time()
             while time.time() - start < 360:
                 try:
-                    cookies = ctx.cookies()
-                    has_auth = any(c.get("name") in ("__Secure-next-auth.session-token", "SAPISID", "SID", "SSID") for c in cookies)
                     token = None
                     email = None
+                    err = None
+                    session_raw = None
                     try:
                         session_data = page.evaluate("() => fetch('/fx/api/auth/session').then(r => r.json()).catch(() => null)")
                         if session_data and isinstance(session_data, dict):
-                            token = session_data.get("accessToken")
+                            token = session_data.get("access_token") or session_data.get("accessToken") or session_data.get("token")
                             email = session_data.get("user", {}).get("email")
+                            err = session_data.get("error")
+                            session_raw = session_data
                     except Exception:
                         pass
 
-                    if has_auth or token or email:
+                    # Require genuine OAuth access token and email without error
+                    if token and email and not err and (token.startswith("ya29.") or len(token) > 40) and not token.startswith("flow_session"):
                         ctx.storage_state(path=str(storage_path))
                         ctx.storage_state(path=str(storage_path_def))
-                        email_str = email or "flow_user"
+                        email_str = email
                         pool.add_or_update_account(acc.id, email=email_str, status="active")
 
-                        if token:
-                            token_file = Path.home() / ".hermes" / "auth" / "flow_token.json"
-                            token_file.parent.mkdir(parents=True, exist_ok=True)
-                            token_file.write_text(json.dumps({"token": token, "email": email_str}), encoding="utf-8")
+                        payload = {
+                            "token": token,
+                            "access_token": token,
+                            "email": email_str,
+                            "updated_at": time.time(),
+                            "expires": session_raw.get("expires") if session_raw else None,
+                            "user": session_raw.get("user") if session_raw else {"email": email_str},
+                        }
+                        raw_json = json.dumps(payload, indent=2)
+
+                        # Write to all standard locations across Hermes and Camofox
+                        for target_f in [
+                            Path.home() / ".hermes" / "auth" / "flow_token.json",
+                            Path.home() / ".hermes" / "flow_token.json",
+                            Path.home() / "AppData" / "Local" / "hermes" / "auth" / "flow_token.json",
+                            Path.home() / ".camofox" / "flow_token.json",
+                        ]:
+                            try:
+                                target_f.parent.mkdir(parents=True, exist_ok=True)
+                                target_f.write_text(raw_json, encoding="utf-8")
+                            except Exception:
+                                pass
 
                         print(f"\n[+] ĐĂNG NHẬP GOOGLE FLOW THÀNH CÔNG! Tài khoản: '{email_str}'")
-                        print(f"[+] Toàn bộ Cookies & Session đã được lưu vĩnh viễn vào Camofox Profile!")
+                        print(f"[+] Access Token hợp lệ: {token[:15]}... (đã lưu vào hệ thống)")
+                        print(f"[+] Toàn bộ Cookies & Session đã được đồng bộ an toàn vào Camofox Profile!")
                         time.sleep(2)
                         ctx.close()
                         return 0

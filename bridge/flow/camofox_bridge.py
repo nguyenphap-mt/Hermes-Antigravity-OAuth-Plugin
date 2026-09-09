@@ -74,8 +74,9 @@ class CamofoxFlowBridge:
             if f.is_file():
                 try:
                     data = json.loads(f.read_text(encoding="utf-8"))
-                    if data.get("token"):
-                        return data["token"]
+                    tok = data.get("access_token") or data.get("token")
+                    if tok and (tok.startswith("ya29.") or len(tok) > 40) and not str(tok).startswith("flow_session"):
+                        return tok
                 except Exception:
                     pass
         return None
@@ -456,7 +457,7 @@ class CamofoxFlowBridge:
             }
             if not self._flow_key:
                 self._flow_key = self._load_persisted_flow_key()
-            if self._flow_key:
+            if self._flow_key and (self._flow_key.startswith("ya29.") or len(self._flow_key) > 40) and not str(self._flow_key).startswith("flow_session"):
                 headers["Authorization"] = f"Bearer {self._flow_key}"
 
             script = f"""(async () => {{

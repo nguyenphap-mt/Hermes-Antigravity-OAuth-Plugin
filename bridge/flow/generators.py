@@ -433,12 +433,13 @@ async def poll_video_status(
                     media_endpoint = ENDPOINTS["get_media"].format(media_id=clean_id)
                     token = bridge._flow_key or bridge._load_persisted_flow_key()
                     headers = {
-                        "Authorization": f"Bearer {token}",
                         "x-goog-api-key": _get_flow_public_api_key(),
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                         "Origin": "https://labs.google",
                         "Referer": "https://labs.google/fx/tools/flow",
                     }
+                    if token and (token.startswith("ya29.") or len(token) > 40) and not str(token).startswith("flow_session"):
+                        headers["Authorization"] = f"Bearer {token}"
                     def _get_fm():
                         import requests
                         r = requests.get(f"https://aisandbox-pa.googleapis.com{media_endpoint}", headers=headers, timeout=15)

@@ -138,31 +138,7 @@ class FlowRefreshDaemon:
                         )
                     page = ctx.pages[0] if ctx.pages else ctx.new_page()
                     
-                    # Direct check on flow.google.com
-                    try:
-                        resp = page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
-                        flow_email = page.evaluate("""() => {
-                            const accountEl = document.querySelector('[aria-label*="Google Account:"]');
-                            if (accountEl) {
-                                const m = (accountEl.getAttribute('aria-label') || '').match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})/);
-                                if (m) return m[1];
-                            }
-                            return null;
-                        }""")
-                        if flow_email:
-                            logger.info("Found active logged-in session on flow.google.com for %s", flow_email)
-                            for sp in target_storage_paths:
-                                try:
-                                    ctx.storage_state(path=str(sp))
-                                except Exception:
-                                    pass
-                            FlowAuthService.get_instance().save_session_data("flow_session_active", flow_email, {"user": {"email": flow_email}})
-                            ctx.close()
-                            return True, "flow_session_active"
-                    except Exception as flow_err:
-                        logger.debug("flow.google.com check: %s", flow_err)
-
-                    # Direct fetch from legacy labs.google auth session endpoint
+                    # Direct fetch from labs.google auth session endpoint
                     try:
                         resp = page.goto("https://labs.google/fx/api/auth/session", timeout=45000)
                         if resp and resp.status == 200:
@@ -171,7 +147,7 @@ class FlowRefreshDaemon:
                             token = res.get("access_token") or res.get("accessToken") or res.get("token")
                             email = res.get("user", {}).get("email") or ""
                             err = res.get("error")
-                            if token and not err:
+                            if token and not err and (token.startswith("ya29.") or len(token) > 40) and not token.startswith("flow_session"):
                                 for sp in target_storage_paths:
                                     try:
                                         ctx.storage_state(path=str(sp))
@@ -198,7 +174,7 @@ class FlowRefreshDaemon:
                                 token = res.get("access_token") or res.get("accessToken") or res.get("token")
                                 email = res.get("user", {}).get("email") or ""
                                 err = res.get("error")
-                                if token and not err:
+                                if token and not err and (token.startswith("ya29.") or len(token) > 40) and not token.startswith("flow_session"):
                                     # Sync storage state
                                     for sp in target_storage_paths:
                                         try:

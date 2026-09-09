@@ -143,17 +143,21 @@ class FlowAuthService:
             expires_at_timestamp = float(expires_str)
 
         now = time.time()
+        is_token_valid_format = bool(token and (token.startswith("ya29.") or len(token) > 40) and not token.startswith("flow_session"))
+
         if expires_at_timestamp > 0:
             remaining = max(0, int(expires_at_timestamp - now))
             is_expired = remaining < 120  # 2 minute skew
         else:
-            remaining = 3600
-            is_expired = False
+            remaining = 3600 if is_token_valid_format else 0
+            is_expired = not is_token_valid_format
 
         preview = f"{token[:8]}...{token[-6:]}" if len(token) > 16 else ""
 
         # Status label
-        if is_expired:
+        if not is_token_valid_format:
+            status_label = "Token không hợp lệ hoặc đã hết hạn (cần đăng nhập Google Flow)"
+        elif is_expired:
             status_label = "Token đã hết hạn (cần làm mới)"
         else:
             mins = remaining // 60
@@ -164,7 +168,7 @@ class FlowAuthService:
                 status_label = f"Đã kết nối ({mins} phút còn lại)"
 
         return {
-            "connected": bool(token and not is_expired),
+            "connected": bool(is_token_valid_format and not is_expired),
             "email": email,
             "user_name": user_name,
             "user_image": user_image,
@@ -388,9 +392,9 @@ class FlowAuthService:
                     )
 
                 try:
-                    page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
-                except Exception:
                     page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=45000)
+                except Exception:
+                    pass
                 page.bring_to_front()
 
                 logger.info("[Handshake] Visible browser open. Waiting for user login...")
@@ -417,33 +421,6 @@ class FlowAuthService:
                     try:
                         active_page = ctx.pages[-1] if ctx.pages else page
 
-                        # Check flow.google.com session directly
-                        flow_email = active_page.evaluate("""() => {
-                            const accountEl = document.querySelector('[aria-label*="Google Account:"]');
-                            if (accountEl) {
-                                const m = (accountEl.getAttribute('aria-label') || '').match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})/);
-                                if (m) return m[1];
-                            }
-                            if (window.location.hostname.includes('flow.google.com') && (window.location.pathname.includes('/project/') || document.querySelector('aisandbox-root'))) {
-                                return 'lecao043@gmail.com';
-                            }
-                            return null;
-                        }""")
-                        if flow_email:
-                            logger.info("[Handshake %s] Detected active session on flow.google.com for: %s", session.session_id[:8], flow_email)
-                            for sp in target_storage_paths:
-                                try:
-                                    ctx.storage_state(path=str(sp))
-                                except Exception:
-                                    pass
-                            self.save_session_data(token="flow_session_active", email=flow_email, raw_session={"user": {"email": flow_email}})
-                            session.status = "completed"
-                            session.email = flow_email
-                            time.sleep(1.0)
-                            ctx.close()
-                            logger.info("[Handshake %s] Handshake complete via flow.google.com! Browser closed.", session.session_id[:8])
-                            return
-
                         res = active_page.evaluate("""() => {
                             return fetch('/fx/api/auth/session')
                                 .then(r => r.json())
@@ -456,7 +433,7 @@ class FlowAuthService:
                             email = user.get("email")
                             err = res.get("error")
 
-                            if token and email and not err:
+                            if token and email and not err and (token.startswith("ya29.") or len(token) > 40) and not token.startswith("flow_session"):
                                 logger.info("[Handshake %s] Detected successful login for: %s", session.session_id[:8], email)
 
                                 for sp in target_storage_paths:
@@ -466,16 +443,14 @@ class FlowAuthService:
                                         pass
 
                                 self.save_session_data(token=token, email=email, raw_session=res)
-
                                 session.status = "completed"
                                 session.email = email
-
                                 time.sleep(1.0)
                                 ctx.close()
                                 logger.info("[Handshake %s] Handshake complete! Browser closed.", session.session_id[:8])
                                 return
-                    except Exception as poll_err:
-                        logger.debug("Polling error: %s", poll_err)
+                    except Exception:
+                        pass
 
                     time.sleep(1.5)
 
