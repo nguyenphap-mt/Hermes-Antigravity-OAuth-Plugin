@@ -619,7 +619,7 @@ def patch_models_catalog():
         if hasattr(hm, "CANONICAL_PROVIDERS"):
             if not any(p.slug == "antigravity" for p in hm.CANONICAL_PROVIDERS):
                 try:
-                    from hermes_cli.models import ProviderEntry
+                    from hermes_cli.models_catalog_static import ProviderEntry
                     hm.CANONICAL_PROVIDERS.append(
                         ProviderEntry(
                             "antigravity",
