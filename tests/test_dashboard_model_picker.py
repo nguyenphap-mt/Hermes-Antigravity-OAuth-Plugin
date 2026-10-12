@@ -3,9 +3,10 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-_PLUGIN_DIR = Path(__file__).resolve().parent.parent
-_HERMES_DIR = _PLUGIN_DIR.parent / "hermes-agent"
-for _p in [_PLUGIN_DIR, _HERMES_DIR]:
+_THIS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _THIS_DIR.parent.parent
+_HERMES_DIR = _THIS_DIR.parent / "hermes-agent"
+for _p in [_THIS_DIR, _REPO_ROOT, _HERMES_DIR]:
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 

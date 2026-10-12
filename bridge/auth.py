@@ -156,11 +156,20 @@ class AntigravityAuthManager:
 
     def load_all_stored_credentials(self) -> List[AntigravityCredentials]:
         """Load all stored credentials (multi-account) from auth file."""
-        if self._auth_file_is_custom:
-            candidate_files = [self.auth_file]
-        else:
-            # FIX: Only read from the active profile's auth file
-            candidate_files = [self.auth_file]
+        candidate_files = [self.auth_file]
+        if not self._auth_file_is_custom:
+            try:
+                root_home = Path.home() / ".hermes" / "auth" / "antigravity_tokens.json"
+                if root_home not in candidate_files and root_home.is_file():
+                    candidate_files.append(root_home)
+                if sys.platform == "win32":
+                    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                    base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                    root_appdata = base / "hermes" / "auth" / "antigravity_tokens.json"
+                    if root_appdata not in candidate_files and root_appdata.is_file():
+                        candidate_files.append(root_appdata)
+            except Exception:
+                pass
         creds_list: List[AntigravityCredentials] = []
         seen_emails: set[str] = set()
 
@@ -215,11 +224,35 @@ class AntigravityAuthManager:
 
     def save_credentials(self, creds: AntigravityCredentials) -> None:
         """Save credentials atomically preserving all accounts and syncing to all profile auth stores."""
-        if self._auth_file_is_custom:
-            target_token_files = [self.auth_file]
-        else:
-            # FIX: Only write to the active profile's auth file
-            target_token_files = [self.auth_file]
+        target_token_files = [self.auth_file]
+        if not self._auth_file_is_custom:
+            try:
+                root_home = Path.home() / ".hermes" / "auth" / "antigravity_tokens.json"
+                target_token_files.append(root_home)
+                if sys.platform == "win32":
+                    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                    base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                    appdata_hermes = base / "hermes"
+                    target_token_files.append(appdata_hermes / "auth" / "antigravity_tokens.json")
+                    profiles_dir = appdata_hermes / "profiles"
+                    if profiles_dir.is_dir():
+                        for p in profiles_dir.iterdir():
+                            if p.is_dir() and not p.name.startswith("."):
+                                target_token_files.append(p / "auth" / "antigravity_tokens.json")
+            except Exception:
+                pass
+        # Deduplicate
+        seen_targets = set()
+        dedup_targets = []
+        for tf in target_token_files:
+            try:
+                key = str(tf.resolve())
+            except Exception:
+                key = str(tf)
+            if key not in seen_targets:
+                seen_targets.add(key)
+                dedup_targets.append(tf)
+        target_token_files = dedup_targets
         try:
             existing_data: Dict[str, Any] = {}
             for tf in target_token_files:
@@ -280,8 +313,34 @@ class AntigravityAuthManager:
                 "updated_at": time.time(),
             }
 
-            # FIX: Only save to the current active profile
             auth_store_targets = [get_hermes_dir() / "auth.json"]
+            if not self._auth_file_is_custom:
+                try:
+                    auth_store_targets.append(Path.home() / ".hermes" / "auth.json")
+                    if sys.platform == "win32":
+                        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                        appdata_h = base / "hermes"
+                        auth_store_targets.append(appdata_h / "auth.json")
+                        p_dir = appdata_h / "profiles"
+                        if p_dir.is_dir():
+                            for p in p_dir.iterdir():
+                                if p.is_dir() and not p.name.startswith("."):
+                                    auth_store_targets.append(p / "auth.json")
+                except Exception:
+                    pass
+            # Deduplicate
+            seen_ast = set()
+            dedup_ast = []
+            for at in auth_store_targets:
+                try:
+                    key = str(at.resolve())
+                except Exception:
+                    key = str(at)
+                if key not in seen_ast:
+                    seen_ast.add(key)
+                    dedup_ast.append(at)
+            auth_store_targets = dedup_ast
 
             for ast in auth_store_targets:
                 try:

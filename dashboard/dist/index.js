@@ -865,7 +865,7 @@
                   }, (activeEmail || "F")[0]),
                   h("div", { className: "overflow-hidden" }, [
                     h("div", { className: "text-[10px] text-zinc-500" }, "Tài khoản Google Flow (Đang chọn)"),
-                    h("div", { className: "text-xs font-semibold text-white truncate", title: activeEmail }, activeEmail || "lecao043@gmail.com"),
+                    h("div", { className: "text-xs font-semibold text-white truncate", title: activeEmail }, activeEmail || "Chưa kết nối"),
                   ]),
                 ]),
 
@@ -958,7 +958,7 @@
           : h("div", { className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" },
               flowAccounts.map(function (acc) {
                 var isAct = acc.is_active || acc.id === "default";
-                var emailDisplay = acc.email || activeEmail || "lecao043@gmail.com";
+                var emailDisplay = acc.email || activeEmail || "Tài khoản mặc định";
                 return h("div", {
                   key: acc.id,
                   className: "bg-[#090a0f] border " + (isAct ? "border-blue-500/40 bg-blue-500/[0.02]" : "border-white/[0.06]") + " rounded-xl p-4 flex flex-col justify-between transition hover:border-zinc-700",

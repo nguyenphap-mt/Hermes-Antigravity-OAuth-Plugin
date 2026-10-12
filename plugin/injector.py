@@ -615,6 +615,29 @@ def patch_models_catalog():
             setattr(patched_provider_model_ids, PATCH_MARKER, True)
             hm.provider_model_ids = patched_provider_model_ids
 
+        # 1b. Patch cached_provider_model_ids for antigravity
+        orig_cpmi = getattr(hm, "cached_provider_model_ids", None)
+        if orig_cpmi and not getattr(orig_cpmi, PATCH_MARKER, False):
+            @functools.wraps(orig_cpmi)
+            def patched_cached_provider_model_ids(provider: Optional[str], *, force_refresh: bool = False, **kwargs) -> list[str]:
+                norm = str(provider or "").strip().lower()
+                if norm in {"antigravity", "google-antigravity", "antigravity-oauth"}:
+                    try:
+                        try:
+                            from tools.antigravity_bridge.models import ModelDiscoveryManager
+                        except ImportError:
+                            from bridge.models import ModelDiscoveryManager
+                        mgr = ModelDiscoveryManager()
+                        disc = mgr.get_discovered_models(force_refresh=force_refresh)
+                        if disc:
+                            return [m.id for m in disc]
+                    except Exception as exc:
+                        logger.debug("Antigravity cached dynamic discovery failed: %s", exc)
+                return orig_cpmi(provider, force_refresh=force_refresh, **kwargs)
+
+            setattr(patched_cached_provider_model_ids, PATCH_MARKER, True)
+            hm.cached_provider_model_ids = patched_cached_provider_model_ids
+
         # 2. Add to CANONICAL_PROVIDERS if missing (ensures /model surfaces it)
         if hasattr(hm, "CANONICAL_PROVIDERS"):
             if not any(p.slug == "antigravity" for p in hm.CANONICAL_PROVIDERS):

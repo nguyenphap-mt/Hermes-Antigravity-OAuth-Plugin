@@ -13,12 +13,19 @@ __pycache__/
 
 # Auth tokens & local browser sessions
 flow_token.json
+antigravity_tokens.json
+*tokens*.json
+auth.json
 *.token.json
 *.token
 flow_browser_session/
 *.storage-state.json
 storage-state.json
 camofox/
+*models_cache*.json
+*.bak
+vbsec-reports/
+.agent/
 
 # Scratch & development artifacts
 scratch/

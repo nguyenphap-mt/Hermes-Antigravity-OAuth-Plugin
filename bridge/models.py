@@ -39,101 +39,413 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Endpoints
-MODELS_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-FALLBACK_MODELS_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-QUOTA_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
-FALLBACK_QUOTA_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+# Production Google Code Assist endpoints (matches Antigravity IDE)
+MODELS_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+FALLBACK_MODELS_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+QUOTA_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+FALLBACK_QUOTA_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 
 DEFAULT_CACHE_TTL_SECONDS = 3600.0  # 1 hour
 DEFAULT_PROJECT_ID = "aicode-consumers"
 
 # Curated static baseline fallback models (used if offline / unauthenticated)
 BASELINE_MODELS: Dict[str, Dict[str, Any]] = {
-    "gemini-3.7-flash-tiered": {
-        "displayName": "Gemini 3.7 Flash Tiered",
+    "gemini-3-flash-agent": {
+        "displayName": "Gemini 3.5 Flash (High)",
         "supportsImages": True,
         "supportsThinking": True,
-        "thinkingBudget": 2048,
+        "thinkingBudget": -1,
         "minThinkingBudget": 32,
         "maxTokens": 1048576,
         "maxOutputTokens": 65536,
         "recommended": True,
-        "model": "MODEL_PLACEHOLDER_M196",
-        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
-        "tagTitle": "Fast & Smart",
-    },
-    "gemini-3.6-flash-high": {
-        "displayName": "Gemini 3.6 Flash (High)",
-        "supportsImages": True,
-        "supportsThinking": True,
-        "thinkingBudget": 4096,
-        "minThinkingBudget": 32,
-        "maxTokens": 1048576,
-        "maxOutputTokens": 65536,
-        "recommended": True,
-        "model": "gemini-3.6-flash-high",
-        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
-    },
-    "gemini-3.6-flash-medium": {
-        "displayName": "Gemini 3.6 Flash (Medium)",
-        "supportsImages": True,
-        "supportsThinking": True,
-        "thinkingBudget": 2048,
-        "minThinkingBudget": 32,
-        "maxTokens": 1048576,
-        "maxOutputTokens": 65536,
-        "recommended": True,
-        "model": "gemini-3.6-flash-medium",
-        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
-    },
-    "gemini-3.1-pro-high": {
-        "displayName": "Gemini 3.1 Pro (High)",
-        "supportsImages": True,
-        "supportsThinking": True,
-        "thinkingBudget": 4096,
-        "minThinkingBudget": 32,
-        "maxTokens": 1048576,
-        "maxOutputTokens": 65536,
-        "recommended": True,
-        "model": "gemini-3.1-pro-high",
-        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
-    },
-    "claude-sonnet-4-6": {
-        "displayName": "Claude Sonnet 4.6 (Thinking)",
-        "supportsImages": True,
-        "supportsThinking": True,
-        "thinkingBudget": 4096,
-        "minThinkingBudget": 100,
-        "maxTokens": 250000,
-        "maxOutputTokens": 65536,
-        "recommended": True,
-        "model": "claude-sonnet-4-6",
-        "apiProvider": "API_PROVIDER_ANTHROPIC",
+        "model": "MODEL_PLACEHOLDER_M84",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
     },
     "claude-opus-4-6-thinking": {
         "displayName": "Claude Opus 4.6 (Thinking)",
         "supportsImages": True,
         "supportsThinking": True,
-        "thinkingBudget": 8192,
-        "minThinkingBudget": 100,
+        "thinkingBudget": 1024,
+        "minThinkingBudget": 32,
         "maxTokens": 250000,
+        "maxOutputTokens": 64000,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M26",
+        "apiProvider": "API_PROVIDER_ANTHROPIC_VERTEX"
+    },
+    "gemini-3.8-flash-high": {
+        "displayName": "Gemini 3.8 Flash (High)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
         "maxOutputTokens": 65536,
         "recommended": True,
-        "model": "claude-opus-4-6-thinking",
-        "apiProvider": "API_PROVIDER_ANTHROPIC",
+        "model": "MODEL_PLACEHOLDER_M318",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.8-flash-medium": {
+        "displayName": "Gemini 3.8 Flash (Medium)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M319",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.6-flash-tiered": {
+        "displayName": "Gemini 3.6 Flash Tiered",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M196",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
     },
     "gpt-oss-120b-medium": {
         "displayName": "GPT-OSS 120B (Medium)",
         "supportsImages": False,
         "supportsThinking": True,
-        "thinkingBudget": 2048,
+        "thinkingBudget": 8192,
         "minThinkingBudget": 32,
         "maxTokens": 131072,
-        "maxOutputTokens": 16384,
+        "maxOutputTokens": 32768,
         "recommended": True,
-        "model": "gpt-oss-120b-medium",
-        "apiProvider": "API_PROVIDER_OPENAI_COMPATIBLE",
+        "model": "MODEL_OPENAI_GPT_OSS_120B_MEDIUM",
+        "apiProvider": "API_PROVIDER_OPENAI_VERTEX"
     },
+    "chat_20706": {
+        "displayName": "Chat_20706",
+        "supportsImages": False,
+        "supportsThinking": False,
+        "thinkingBudget": 2048,
+        "minThinkingBudget": 32,
+        "maxTokens": 16384,
+        "maxOutputTokens": 65536,
+        "recommended": False,
+        "model": "MODEL_CHAT_20706",
+        "apiProvider": "API_PROVIDER_INTERNAL"
+    },
+    "gemini-3.5-flash-lite": {
+        "displayName": "Gemini 3.5 Flash Lite",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M198",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-2.5-pro": {
+        "displayName": "Gemini 2.5 Pro",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1024,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_GOOGLE_GEMINI_2_5_PRO",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.6-flash-low": {
+        "displayName": "Gemini 3.6 Flash (Low)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M73",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.8-flash-low": {
+        "displayName": "Gemini 3.8 Flash (Low)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M320",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.1-pro-high": {
+        "displayName": "Gemini 3.1 Pro (High)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 10001,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M37",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.7-flash-tiered": {
+        "displayName": "Gemini 3.7 Flash Tiered",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M301",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.7-flash-medium": {
+        "displayName": "Gemini 3.7 Flash (Medium)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M299",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "claude-sonnet-4-6": {
+        "displayName": "Claude Sonnet 4.6 (Thinking)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1024,
+        "minThinkingBudget": 32,
+        "maxTokens": 250000,
+        "maxOutputTokens": 64000,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M35",
+        "apiProvider": "API_PROVIDER_ANTHROPIC_VERTEX"
+    },
+    "gemini-3.1-flash-lite": {
+        "displayName": "Gemini 3.1 Flash Lite",
+        "supportsImages": False,
+        "supportsThinking": False,
+        "thinkingBudget": 2048,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": False,
+        "model": "MODEL_PLACEHOLDER_M50",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-2.5-flash-lite": {
+        "displayName": "Gemini 2.5 Flash Lite",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.7-flash-high": {
+        "displayName": "Gemini 3.7 Flash (High)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M298",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-pro-agent": {
+        "displayName": "Gemini 3.1 Pro (High)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M16",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.6-flash-high": {
+        "displayName": "Gemini 3.6 Flash (High)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M71",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "tab_jump_flash_lite_preview": {
+        "displayName": "Tab_Jump_Flash_Lite_Preview",
+        "supportsImages": False,
+        "supportsThinking": False,
+        "thinkingBudget": 2048,
+        "minThinkingBudget": 32,
+        "maxTokens": 16384,
+        "maxOutputTokens": 4096,
+        "recommended": False,
+        "model": "MODEL_PLACEHOLDER_M28",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.6-flash-medium": {
+        "displayName": "Gemini 3.6 Flash (Medium)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M72",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3-flash": {
+        "displayName": "Gemini 3 Flash",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M18",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.7-flash-low": {
+        "displayName": "Gemini 3.7 Flash (Low)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M300",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "chat_23310": {
+        "displayName": "Chat_23310",
+        "supportsImages": False,
+        "supportsThinking": False,
+        "thinkingBudget": 2048,
+        "minThinkingBudget": 32,
+        "maxTokens": 32768,
+        "maxOutputTokens": 65536,
+        "recommended": False,
+        "model": "MODEL_CHAT_23310",
+        "apiProvider": "API_PROVIDER_INTERNAL"
+    },
+    "gemini-2.5-flash-thinking": {
+        "displayName": "Gemini 2.5 Flash (Thinking)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-2.5-flash": {
+        "displayName": "Gemini 2.5 Flash",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_GOOGLE_GEMINI_2_5_FLASH",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.1-flash-image": {
+        "displayName": "Gemini 3.1 Flash Image",
+        "supportsImages": False,
+        "supportsThinking": False,
+        "thinkingBudget": 2048,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": False,
+        "model": "MODEL_PLACEHOLDER_M21",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.8-flash-tiered": {
+        "displayName": "Gemini 3.8 Flash Tiered",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M322",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.1-pro-low": {
+        "displayName": "Gemini 3.1 Pro (Low)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1001,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65535,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M36",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "tab_flash_lite_preview": {
+        "displayName": "Tab_Flash_Lite_Preview",
+        "supportsImages": False,
+        "supportsThinking": False,
+        "thinkingBudget": 2048,
+        "minThinkingBudget": 32,
+        "maxTokens": 16384,
+        "maxOutputTokens": 4096,
+        "recommended": False,
+        "model": "MODEL_PLACEHOLDER_M19",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.5-flash-low": {
+        "displayName": "Gemini 3.5 Flash (Medium)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M20",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-3.5-flash-extra-low": {
+        "displayName": "Gemini 3.5 Flash (Low)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M187",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    }
 }
 
 
@@ -194,6 +506,40 @@ class ModelDiscoveryManager:
     def get_cache_path(self) -> Path:
         return self.cache_file
 
+    def _fetch_from_local_bridge(self) -> Optional[Dict[str, Any]]:
+        """Attempt to fetch live models from local bridge daemon on port 8100."""
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return None
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:8100/v1/models",
+                headers={"Accept": "application/json", "User-Agent": "Antigravity-Discovery/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models_list = data.get("data", [])
+                if models_list:
+                    res = {}
+                    for item in models_list:
+                        mid = item.get("id")
+                        if mid:
+                            res[mid] = {
+                                "displayName": item.get("display_name") or mid,
+                                "maxTokens": item.get("max_tokens", 1048576),
+                                "maxOutputTokens": item.get("max_output_tokens", 65536),
+                                "supportsThinking": item.get("supports_thinking", False),
+                                "thinkingBudget": item.get("thinking_budget", 2048),
+                                "minThinkingBudget": item.get("min_thinking_budget", 32),
+                                "supportsImages": item.get("supports_images", False),
+                                "supportsVideo": item.get("supports_video", False),
+                                "recommended": item.get("recommended", True),
+                                "model": mid,
+                            }
+                    return res
+        except Exception:
+            pass
+        return None
+
     def _load_cache_from_disk(self) -> Optional[Dict[str, Any]]:
         if not self.cache_file.is_file():
             return None
@@ -236,6 +582,9 @@ class ModelDiscoveryManager:
             creds = self.auth_manager.resolve_valid_credentials()
         except Exception as e:
             logger.debug("Could not resolve credentials for model discovery: %s", e)
+            local_models = self._fetch_from_local_bridge()
+            if local_models:
+                return local_models
             return self._fallback_models()
 
         raw_pid = getattr(creds, "project_id", None)
@@ -244,6 +593,10 @@ class ModelDiscoveryManager:
             candidate_projects.append(raw_pid.strip())
         if DEFAULT_PROJECT_ID not in candidate_projects:
             candidate_projects.append(DEFAULT_PROJECT_ID)
+        if "" not in candidate_projects:
+            candidate_projects.append("")
+        if "" not in candidate_projects:
+            candidate_projects.append("")
 
         endpoints = [MODELS_ENDPOINT, FALLBACK_MODELS_ENDPOINT]
         raw_models: Dict[str, Any] = {}
@@ -288,6 +641,9 @@ class ModelDiscoveryManager:
                 break
 
         if not raw_models:
+            local_models = self._fetch_from_local_bridge()
+            if local_models:
+                return local_models
             logger.warning("Failed to query live models from Code Assist; using baseline fallback.")
             return self._fallback_models()
 
@@ -314,6 +670,10 @@ class ModelDiscoveryManager:
             candidate_projects.append(raw_pid.strip())
         if DEFAULT_PROJECT_ID not in candidate_projects:
             candidate_projects.append(DEFAULT_PROJECT_ID)
+        if "" not in candidate_projects:
+            candidate_projects.append("")
+        if "" not in candidate_projects:
+            candidate_projects.append("")
 
         for pid in candidate_projects:
             payload_bytes = json.dumps({"project": pid}).encode("utf-8")
@@ -371,7 +731,9 @@ class ModelDiscoveryManager:
         for model_id, m in raw_models.items():
             if not isinstance(m, dict):
                 continue
-            disp = m.get("displayName") or model_id
+            disp = m.get("displayName")
+            if not disp or disp == "None":
+                disp = BASELINE_MODELS.get(model_id, {}).get("displayName") or model_id.replace("-", " ").title()
             code_assist_id = m.get("model") or model_id
             max_tok = int(m.get("maxTokens") or 1048576)
             max_out = int(m.get("maxOutputTokens") or 65536)
@@ -441,16 +803,21 @@ class ModelDiscoveryManager:
 
         # 2. Match by display name substring or slug alias
         alias_rules = [
-            ("gemini-3.7-flash", ["gemini-3.7-flash-tiered", "gemini-3.7-flash-high", "gemini-3-flash-agent"]),
-            ("gemini-3.7", ["gemini-3.7-flash-tiered", "gemini-3-flash-agent"]),
+            ("gemini-3.8-flash", ["gemini-3.8-flash-tiered", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"]),
+            ("gemini-3.8", ["gemini-3.8-flash-tiered", "gemini-3.8-flash-high", "gemini-3.8-flash-medium"]),
+            ("gemini-3.7-flash", ["gemini-3.7-flash-tiered", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3-flash-agent"]),
+            ("gemini-3.7", ["gemini-3.7-flash-tiered", "gemini-3.7-flash-high"]),
             ("gemini-3.6-flash", ["gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"]),
-            ("gemini-3.5-flash", ["gemini-3.5-flash-low", "gemini-3.5-flash-extra-low"]),
+            ("gemini-3.5-flash", ["gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", "gemini-3.5-flash-lite"]),
             ("gemini-3.1-pro", ["gemini-3.1-pro-high", "gemini-3.1-pro-low", "gemini-pro-agent"]),
             ("gemini-pro", ["gemini-3.1-pro-high", "gemini-3.1-pro-low"]),
-            ("gemini-flash", ["gemini-3.7-flash-tiered", "gemini-3.6-flash-high", "gemini-3-flash"]),
+            ("gemini-flash", ["gemini-3.8-flash-tiered", "gemini-3.7-flash-tiered", "gemini-3.6-flash-high", "gemini-3-flash"]),
+            ("gemini-2.5-flash", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash-thinking"]),
+            ("gemini-2.5-pro", ["gemini-2.5-pro"]),
             ("claude-sonnet-4-6", ["claude-sonnet-4-6"]),
             ("claude-sonnet-4.6", ["claude-sonnet-4-6"]),
             ("claude-3-7-sonnet", ["claude-sonnet-4-6"]),
+            ("claude-3.7-sonnet", ["claude-sonnet-4-6"]),
             ("claude-opus-4-6", ["claude-opus-4-6-thinking", "claude-sonnet-4-6"]),
             ("claude-opus", ["claude-opus-4-6-thinking", "claude-sonnet-4-6"]),
             ("claude-sonnet", ["claude-sonnet-4-6"]),

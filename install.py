@@ -74,10 +74,42 @@ def get_candidate_workspaces() -> List[Path]:
     return list(candidates)
 
 
+def sync_tokens_across_profiles(homes: List[Path]):
+    """Sync valid tokens from the most recently updated tokens file to all profile directories."""
+    candidates = []
+    for h in homes:
+        t_file = h / "auth" / "antigravity_tokens.json"
+        if t_file.is_file():
+            try:
+                mtime = t_file.stat().st_mtime
+                candidates.append((mtime, t_file))
+            except Exception:
+                pass
+    if not candidates:
+        return
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_file = candidates[0][1]
+    try:
+        content = best_file.read_bytes()
+        for h in homes:
+            dest = h / "auth" / "antigravity_tokens.json"
+            if dest != best_file:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(content)
+        print(f"      + Synchronized OAuth tokens from {best_file.parent.parent.name} across all {len(homes)} profiles.")
+    except Exception as e:
+        print(f"      ! Warning: Token sync failed: {e}")
+
+
 def invalidate_stale_caches(homes: List[Path]):
     """Clean all stale provider_models_cache.json across all discovered homes."""
     for h in homes:
         for p in h.rglob("*models_cache*.json"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+        for p in h.rglob("*provider_models_cache*.json"):
             try:
                 p.unlink()
             except Exception:
@@ -296,8 +328,12 @@ def main():
             except Exception as e:
                 print(f"      ! Failed to install hook in {ws}: {e}")
 
-    # 4. Clear Stale Caches
-    print("\n[5/5] Invalidating stale model caches...")
+    # 4. Synchronize Tokens Across Profiles
+    print("\n[5/6] Synchronizing OAuth Tokens Across All Profiles...")
+    sync_tokens_across_profiles(homes)
+
+    # 5. Clear Stale Caches
+    print("\n[6/6] Invalidating stale model caches...")
     invalidate_stale_caches(homes)
     print("      + Caches cleared. Fresh dynamic models will load immediately.")
 
