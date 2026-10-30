@@ -356,8 +356,8 @@ class CamofoxFlowBridge:
             logger.debug("Origin check warning before reCAPTCHA: %s", ex)
 
         script = f"""(async () => {{
-            const SITE_KEY = '{FLOW_SITE_KEY}';
-            const ACTION = '{action}';
+            const SITE_KEY = {json.dumps(FLOW_SITE_KEY)};
+            const ACTION = {json.dumps(action)};
             const getWin = () => window.wrappedJSObject || window;
             let w = getWin();
 
@@ -463,22 +463,24 @@ class CamofoxFlowBridge:
             script = f"""(async () => {{
                 // Hook to capture any Bearer token if sent by page
                 const headers = {json.dumps(headers)};
+                const reqMethod = {json.dumps(method)};
+                const reqUrl = {json.dumps(url)};
                 if (window.__FLOW_KEY__ && !headers['Authorization']) {{
                     headers['Authorization'] = `Bearer ${{window.__FLOW_KEY__}}`;
                 }}
 
                 const fetchOptions = {{
-                    method: '{method}',
+                    method: reqMethod,
                     headers: headers,
                     credentials: 'include'
                 }};
 
-                if ('{method}' !== 'GET' && '{method}' !== 'HEAD') {{
+                if (reqMethod !== 'GET' && reqMethod !== 'HEAD') {{
                     fetchOptions.body = JSON.stringify({json.dumps(body)});
                 }}
 
                 try {{
-                    const resp = await fetch('{url}', fetchOptions);
+                    const resp = await fetch(reqUrl, fetchOptions);
                     const status = resp.status;
                     let data = null;
                     const text = await resp.text();

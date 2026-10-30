@@ -1,8 +1,9 @@
 /**
  * Hermes Antigravity OAuth & Google Flow Suite — Cockpit Stylesheet
- * 
+ *
  * Aesthetic: High-Tech Obsidian Cyber-Lab (taste-skill anti-slop)
- * Obsidian dark (#090a0f), Emerald (#10b981), Cyan (#06b6d4), Indigo (#6366f1)
+ * Self-contained CSS rules so dynamic plugin rendering never breaks when
+ * Tailwind JIT classes are absent from the host bundle.
  */
 
 :root {
@@ -12,16 +13,350 @@
   --ag-obsidian-800: #141822;
   --ag-obsidian-700: #1d2332;
   --ag-obsidian-600: #2c354b;
-  --ag-emerald-glow: rgba(16, 185, 129, 0.15);
-  --ag-cyan-glow: rgba(6, 182, 212, 0.12);
-  --ag-border-subtle: rgba(255, 255, 255, 0.07);
+  --ag-emerald-500: #10b981;
+  --ag-emerald-600: #059669;
+  --ag-teal-600: #0d9488;
+  --ag-cyan-400: #22d3ee;
+  --ag-amber-400: #fbbf24;
+  --ag-red-400: #f87171;
+  --ag-border-subtle: rgba(255, 255, 255, 0.08);
   --ag-border-hover: rgba(16, 185, 129, 0.35);
 }
 
 .ag-cockpit-root {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   color: #f4f4f5;
+  max-width: 1152px;
+  margin: 0 auto;
+  padding: 12px;
+  box-sizing: border-box;
 }
+
+@media (min-width: 768px) {
+  .ag-cockpit-root {
+    padding: 24px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Cards & Surfaces
+ * --------------------------------------------------------------------------- */
+.ag-card {
+  background: #0e1118 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 16px !important;
+  padding: 18px !important;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6) !important;
+}
+
+@media (min-width: 640px) {
+  .ag-card {
+    padding: 24px !important;
+  }
+}
+
+.ag-subcard {
+  background: #090a0f !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 14px !important;
+  padding: 16px !important;
+  transition: border-color 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.ag-subcard:hover {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+.ag-subcard-active {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.06) 0%, #090a0f 100%) !important;
+  border: 1px solid rgba(16, 185, 129, 0.45) !important;
+  box-shadow: 0 4px 20px -4px rgba(16, 185, 129, 0.12) !important;
+}
+
+.ag-subcard-disabled {
+  background: #08090d !important;
+  border: 1px solid rgba(239, 68, 68, 0.28) !important;
+  opacity: 0.82;
+}
+
+/* ---------------------------------------------------------------------------
+ * Buttons (Strict Single-Line CTA & High Contrast WCAG AA)
+ * --------------------------------------------------------------------------- */
+.ag-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  padding: 8px 14px !important;
+  border-radius: 10px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  transition: all 0.18s ease !important;
+  text-decoration: none !important;
+  box-sizing: border-box !important;
+}
+
+.ag-btn:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
+}
+
+.ag-btn-primary {
+  background: linear-gradient(135deg, #059669 0%, #0d9488 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(52, 211, 153, 0.35) !important;
+  box-shadow: 0 4px 14px rgba(5, 150, 105, 0.3) !important;
+}
+
+.ag-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #10b981 0%, #14b8a6 100%) !important;
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.4) !important;
+}
+
+.ag-btn-secondary {
+  background: #141822 !important;
+  color: #e4e4e7 !important;
+  border: 1px solid #27272a !important;
+}
+
+.ag-btn-secondary:hover:not(:disabled) {
+  background: #1d2332 !important;
+  border-color: #3f3f46 !important;
+  color: #ffffff !important;
+}
+
+.ag-btn-amber {
+  background: rgba(120, 53, 15, 0.35) !important;
+  color: #fcd34d !important;
+  border: 1px solid rgba(217, 119, 6, 0.45) !important;
+}
+
+.ag-btn-amber:hover:not(:disabled) {
+  background: rgba(146, 64, 14, 0.5) !important;
+  border-color: rgba(245, 158, 11, 0.65) !important;
+}
+
+.ag-btn-danger {
+  background: rgba(127, 29, 29, 0.3) !important;
+  color: #f87171 !important;
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+}
+
+.ag-btn-danger:hover:not(:disabled) {
+  background: rgba(153, 27, 27, 0.45) !important;
+}
+
+.ag-btn-sm {
+  padding: 5px 10px !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+  gap: 5px !important;
+}
+
+.ag-btn-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 34px !important;
+  height: 34px !important;
+  padding: 0 !important;
+  border-radius: 10px !important;
+  flex-shrink: 0 !important;
+  cursor: pointer !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Navigation Tabs (2x2 Grid on Mobile, 4-Column Row on Desktop, Zero Text Wrap)
+ * --------------------------------------------------------------------------- */
+.ag-tabs-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  margin-bottom: 20px !important;
+  padding-bottom: 12px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+@media (min-width: 640px) {
+  .ag-tabs-grid {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 10px !important;
+  }
+}
+
+.ag-tab-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  padding: 10px 14px !important;
+  border-radius: 12px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  background: #0e1118 !important;
+  color: #a1a1aa !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  cursor: pointer !important;
+  transition: all 0.18s ease !important;
+}
+
+.ag-tab-btn:hover {
+  color: #f4f4f5 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+.ag-tab-btn-active {
+  background: rgba(16, 185, 129, 0.14) !important;
+  color: #34d399 !important;
+  border: 1px solid rgba(16, 185, 129, 0.4) !important;
+  box-shadow: 0 2px 12px rgba(16, 185, 129, 0.12) !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Badges, Pills & Avatars
+ * --------------------------------------------------------------------------- */
+.ag-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 3px 9px !important;
+  border-radius: 9999px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  font-family: "Geist Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  white-space: nowrap !important;
+  line-height: 1.3 !important;
+}
+
+.ag-badge-emerald {
+  background: rgba(16, 185, 129, 0.14) !important;
+  color: #34d399 !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+}
+
+.ag-badge-red {
+  background: rgba(127, 29, 29, 0.5) !important;
+  color: #f87171 !important;
+  border: 1px solid rgba(239, 68, 68, 0.45) !important;
+}
+
+.ag-badge-amber {
+  background: rgba(120, 53, 15, 0.45) !important;
+  color: #fbbf24 !important;
+  border: 1px solid rgba(245, 158, 11, 0.4) !important;
+}
+
+.ag-badge-neutral {
+  background: #141822 !important;
+  color: #a1a1aa !important;
+  border: 1px solid #27272a !important;
+}
+
+.ag-avatar {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 10px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  flex-shrink: 0 !important;
+}
+
+.ag-avatar-active {
+  background: linear-gradient(135deg, #059669, #0d9488) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.3) !important;
+}
+
+.ag-avatar-ready {
+  background: #181c26 !important;
+  color: #34d399 !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
+}
+
+.ag-avatar-disabled {
+  background: rgba(127, 29, 29, 0.35) !important;
+  color: #f87171 !important;
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Modal Overlay (Fixed Full-Screen Backdrop)
+ * --------------------------------------------------------------------------- */
+.ag-modal-backdrop {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 9999 !important;
+  background: rgba(3, 5, 8, 0.85) !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 16px !important;
+  overflow-y: auto !important;
+}
+
+.ag-modal-dialog {
+  background: #0e1118 !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+  border-radius: 18px !important;
+  width: 100% !important;
+  max-width: 520px !important;
+  padding: 20px !important;
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.85), 0 0 30px rgba(16, 185, 129, 0.1) !important;
+  box-sizing: border-box !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Form Controls (Inputs, Selects, Textareas)
+ * --------------------------------------------------------------------------- */
+.ag-input,
+.ag-select,
+.ag-textarea {
+  background: #090a0f !important;
+  border: 1px solid #27272a !important;
+  border-radius: 10px !important;
+  color: #f4f4f5 !important;
+  font-size: 12px !important;
+  padding: 8px 12px !important;
+  outline: none !important;
+  transition: border-color 0.15s ease !important;
+  box-sizing: border-box !important;
+}
+
+.ag-input:focus,
+.ag-select:focus,
+.ag-textarea:focus {
+  border-color: #10b981 !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Icon Sizing Guarantees
+ * --------------------------------------------------------------------------- */
+.ag-cockpit-root svg {
+  flex-shrink: 0;
+}
+.w-3 { width: 12px !important; }
+.h-3 { height: 12px !important; }
+.w-3\.5 { width: 14px !important; }
+.h-3\.5 { height: 14px !important; }
+.w-4 { width: 16px !important; }
+.h-4 { height: 16px !important; }
+.w-5 { width: 20px !important; }
+.h-5 { height: 20px !important; }
+.w-6 { width: 24px !important; }
+.h-6 { height: 24px !important; }
 
 /* Refined custom scrollbar */
 .ag-scrollbar::-webkit-scrollbar {
@@ -39,22 +374,6 @@
   background: #2c354b;
 }
 
-/* Card border glow effects */
-.ag-card-glow {
-  background: #0e1118;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.ag-card-glow:hover {
-  border-color: rgba(16, 185, 129, 0.32);
-  box-shadow: 0 4px 20px -2px rgba(16, 185, 129, 0.08);
-}
-
-/* Terminal & telemetry glow */
-.ag-terminal-glow {
-  box-shadow: 0 0 40px -10px rgba(16, 185, 129, 0.08), 0 0 20px -5px rgba(6, 182, 212, 0.05);
-}
-
 /* Pulsing LED status indicator */
 @keyframes ag-led-blink {
   0%, 100% {
@@ -70,19 +389,6 @@
   animation: ag-led-blink 2.2s infinite ease-in-out;
 }
 
-/* Monospace telemetry data */
 .ag-mono {
   font-family: "Geist Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-/* Tab active indicator */
-.ag-tab-active {
-  background: rgba(16, 185, 129, 0.12) !important;
-  color: #34d399 !important;
-  border-color: rgba(16, 185, 129, 0.3) !important;
-}
-
-/* Responsive grid transitions */
-.ag-grid-transition {
-  transition: grid-template-columns 0.25s ease-in-out;
 }

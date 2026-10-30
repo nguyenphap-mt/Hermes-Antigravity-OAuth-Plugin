@@ -217,6 +217,12 @@ class FlowAuthService:
                     payload["credits"] = raw_session["credits"]
 
             target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            if os.name != "nt":
+                try:
+                    import stat
+                    os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
+                except Exception:
+                    pass
             logger.info("Saved Google Flow session to %s for %s", target, email)
 
             # Only sync to fallback paths if target is in production hermes home
@@ -236,6 +242,9 @@ class FlowAuthService:
                         if fb.resolve() != target.resolve():
                             fb.parent.mkdir(parents=True, exist_ok=True)
                             fb.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                            if os.name != "nt":
+                                import stat
+                                os.chmod(fb, stat.S_IRUSR | stat.S_IWUSR)
                     except Exception:
                         pass
 
@@ -338,28 +347,12 @@ class FlowAuthService:
 
         profile_dir = Path.home() / ".hermes" / "flow_browser_session"
         profile_dir.mkdir(parents=True, exist_ok=True)
-
-        # Pre-seed profile from existing local Chrome profiles if available
-        try:
-            chrome_base = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
-            dest_def = profile_dir / "Default"
-            if not (dest_def / "Network" / "Cookies").exists():
-                candidate_profiles = [chrome_base / "Profile 2", chrome_base / "Default", chrome_base / "Profile 1"]
-                chosen_p = next((p for p in candidate_profiles if p.is_dir()), None)
-                if chosen_p:
-                    dest_def.mkdir(parents=True, exist_ok=True)
-                    if (chrome_base / "Local State").exists():
-                        shutil.copy2(chrome_base / "Local State", profile_dir / "Local State")
-                    for item in ["Network", "Cookies", "Login Data", "Web Data", "Preferences", "Secure Preferences"]:
-                        src = chosen_p / item
-                        dst = dest_def / item
-                        if src.is_dir():
-                            shutil.copytree(src, dst, dirs_exist_ok=True)
-                        elif src.is_file():
-                            shutil.copy2(src, dst)
-                    logger.info("[Handshake] Pre-seeded Google accounts from Chrome %s", chosen_p.name)
-        except Exception as seed_err:
-            logger.debug("Pre-seed Chrome profile error: %s", seed_err)
+        if os.name != "nt":
+            try:
+                import stat
+                os.chmod(profile_dir, stat.S_IRWXU)
+            except Exception:
+                pass
 
         target_storage_paths = [
             p / "storage-state.json" for p in get_camofox_profile_dirs()
@@ -391,6 +384,7 @@ class FlowAuthService:
                         viewport=None,
                     )
 
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 try:
                     page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=45000)
                 except Exception:

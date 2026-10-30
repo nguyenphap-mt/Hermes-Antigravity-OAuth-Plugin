@@ -21,11 +21,17 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 logger = logging.getLogger("tools.antigravity_bridge.flow.generators")
 
 DEFAULT_PROJECT = os.environ.get("DEFAULT_PROJECT", "0143adf4-5864-4cb4-abb5-fe4254ad0dc7")
-_FLOW_PUBLIC_KEY_B64 = "QUl6YVN5QnRybTBvNWFiMWMtRWM4WnVMY0d0M29KQUE1Vld0M3BZ"
 
+try:
+    from bridge.flow.camofox_bridge import _get_flow_public_api_key
+except ImportError:
+    try:
+        from .camofox_bridge import _get_flow_public_api_key
+    except ImportError:
+        _FLOW_PUBLIC_KEY_B64 = "QUl6YVN5QnRybTBvNWFiMWMtRWM4WnVMY0d0M29KQUE1Vld0M3BZ"
 
-def _get_flow_public_api_key() -> str:
-    return os.environ.get("GOOGLE_FLOW_API_KEY") or base64.b64decode(_FLOW_PUBLIC_KEY_B64).decode("utf-8")
+        def _get_flow_public_api_key() -> str:
+            return os.environ.get("GOOGLE_FLOW_API_KEY") or base64.b64decode(_FLOW_PUBLIC_KEY_B64).decode("utf-8")
 
 
 class FlowCreditExhaustedError(RuntimeError):
@@ -125,6 +131,7 @@ ENDPOINTS = {
 }
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+SAFE_MEDIA_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 
 
 def extract_media_id(name_or_uri: str) -> str:
@@ -133,6 +140,19 @@ def extract_media_id(name_or_uri: str) -> str:
         return ""
     m = UUID_RE.search(name_or_uri)
     return m.group() if m else ""
+
+
+def sanitize_media_id(name_or_uri: str) -> str:
+    """Extract UUID or validate safe alphanumeric media_id to prevent path/JS injection."""
+    if not name_or_uri or not isinstance(name_or_uri, str):
+        raise ValueError("Invalid media_id: empty or non-string")
+    raw = name_or_uri.strip()
+    extracted = extract_media_id(raw)
+    if extracted:
+        return extracted
+    if SAFE_MEDIA_ID_RE.match(raw):
+        return raw
+    raise ValueError(f"Invalid media_id format: {raw!r}")
 
 
 def resolve_seed(seed: Optional[int], index: int = 0) -> int:
@@ -324,6 +344,7 @@ async def generate_i2v(
 ) -> List[str]:
     """Generate video starting from an image (Image-to-Video)."""
     project_id = project_id or DEFAULT_PROJECT
+    clean_start_id = sanitize_media_id(start_image_media_id)
     aspect_enum = VIDEO_ASPECTS.get(aspect.lower(), "VIDEO_ASPECT_RATIO_LANDSCAPE")
     model_key = VIDEO_MODELS.get(duration, "abra_t2v_10s")
 
@@ -332,7 +353,7 @@ async def generate_i2v(
         "textInput": {"structuredPrompt": {"parts": [{"text": prompt}]}},
         "videoModelKey": model_key,
         "seed": resolve_seed(seed),
-        "videoInput": {"startImage": {"mediaId": start_image_media_id}},
+        "videoInput": {"startImage": {"mediaId": clean_start_id}},
         "metadata": {},
     }]
 
@@ -343,7 +364,7 @@ async def generate_i2v(
         "useV2ModelConfig": True,
     }
 
-    logger.info("Generating I2V Video: '%s' starting from media %s", prompt[:60], start_image_media_id)
+    logger.info("Generating I2V Video: '%s' starting from media %s", prompt[:60], clean_start_id)
     result = await bridge.api_request(ENDPOINTS["generate_i2v"], body, captcha_action="VIDEO_GENERATION")
     _check_flow_error(result, "I2V Generation")
 
@@ -361,6 +382,7 @@ async def upsample_video(
 ) -> List[str]:
     """Upsample existing video to 1080p or 4K."""
     project_id = project_id or DEFAULT_PROJECT
+    clean_id = sanitize_media_id(media_id)
     tier = "4k" if "4k" in resolution.lower() or "2160" in resolution.lower() else "1080p"
     model_key = VIDEO_UPSAMPLE_MODELS[tier]
     res_enum = VIDEO_UPSAMPLE_RESOLUTIONS[tier]
@@ -372,12 +394,12 @@ async def upsample_video(
         "requests": [{
             "aspectRatio": aspect_enum,
             "videoModelKey": model_key,
-            "videoInput": {"mediaId": media_id},
+            "videoInput": {"mediaId": clean_id},
             "resolution": res_enum,
         }],
     }
 
-    logger.info("Upsampling video %s to %s (%s)", media_id, tier, model_key)
+    logger.info("Upsampling video %s to %s (%s)", clean_id, tier, model_key)
     result = await bridge.api_request(ENDPOINTS["upsample_video"], body, captcha_action="VIDEO_GENERATION")
     _check_flow_error(result, "Video Upsample")
 
@@ -400,7 +422,7 @@ async def poll_video_status(
     Returns (is_ready, video_url_or_error).
     """
     project_id = project_id or DEFAULT_PROJECT
-    clean_id = extract_media_id(media_id) or media_id
+    clean_id = sanitize_media_id(media_id)
     endpoint = ENDPOINTS["poll_status"]
     body = {
         "media": [

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import html
 import json
 import logging
 import os
@@ -53,6 +54,9 @@ AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v1/userinfo"
 LOAD_CODE_ASSIST_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+FALLBACK_LOAD_CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+ONBOARD_USER_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser"
+FALLBACK_ONBOARD_USER_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
 
 OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/cloud-platform "
@@ -96,6 +100,15 @@ class AntigravityCredentials:
     managed_project_id: str = ""
     tier_id: str = ""
     source: str = "oauth_pkce"
+
+    @property
+    def effective_project_id(self) -> str:
+        """Return the Google-assigned managed companion project ID first, falling back to project_id."""
+        if self.managed_project_id and self.managed_project_id != DEFAULT_PROJECT_ID:
+            return self.managed_project_id
+        if self.project_id and self.project_id != DEFAULT_PROJECT_ID:
+            return self.project_id
+        return self.managed_project_id or self.project_id or DEFAULT_PROJECT_ID
 
     @property
     def is_expired(self) -> bool:
@@ -222,7 +235,7 @@ class AntigravityAuthManager:
 
         return all_creds[0]
 
-    def save_credentials(self, creds: AntigravityCredentials) -> None:
+    def save_credentials(self, creds: AntigravityCredentials, reset_status: bool = False) -> None:
         """Save credentials atomically preserving all accounts and syncing to all profile auth stores."""
         target_token_files = [self.auth_file]
         if not self._auth_file_is_custom:
@@ -253,6 +266,7 @@ class AntigravityAuthManager:
                 seen_targets.add(key)
                 dedup_targets.append(tf)
         target_token_files = dedup_targets
+        tmp_path: Optional[Path] = None
         try:
             existing_data: Dict[str, Any] = {}
             for tf in target_token_files:
@@ -270,11 +284,28 @@ class AntigravityAuthManager:
                     prev_email = existing_data.get("email") or "primary"
                     accounts[prev_email] = existing_data
 
-            email_key = creds.email or "primary"
-            accounts[email_key] = creds.to_dict()
+            email_key = (creds.email or "primary").strip().lower()
+            prev_acct = accounts.get(email_key) if isinstance(accounts.get(email_key), dict) else {}
+            new_acct = dict(prev_acct)
+            for k, v in creds.to_dict().items():
+                if k in {"managed_project_id", "tier_id"} and not v and prev_acct.get(k):
+                    continue
+                if k == "project_id" and (not v or v == DEFAULT_PROJECT_ID) and prev_acct.get("managed_project_id"):
+                    new_acct["project_id"] = prev_acct["managed_project_id"]
+                    continue
+                new_acct[k] = v
+            if reset_status or "status" not in new_acct:
+                new_acct["status"] = "active"
+                new_acct["exhausted_until"] = None
+                new_acct["consecutive_429_count"] = 0
+            accounts[email_key] = new_acct
 
-            out_data = creds.to_dict()
+            out_data = dict(existing_data)
+            for k, v in new_acct.items():
+                out_data[k] = v
             out_data["accounts"] = accounts
+            if not out_data.get("active_account_email") or reset_status:
+                out_data["active_account_email"] = email_key
 
             # Save token files
             for tf in target_token_files:
@@ -308,7 +339,7 @@ class AntigravityAuthManager:
                 "access_token": creds.access_token,
                 "refresh_token": creds.refresh_token,
                 "email": creds.email,
-                "project_id": creds.project_id,
+                "project_id": creds.effective_project_id or creds.project_id,
                 "expires_at": creds.expires_at,
                 "updated_at": time.time(),
             }
@@ -357,6 +388,8 @@ class AntigravityAuthManager:
                     tmp_ast = ast.with_suffix(".tmp")
                     with open(tmp_ast, "w", encoding="utf-8") as af:
                         json.dump(store, af, indent=2)
+                    if os.name != "nt":
+                        os.chmod(tmp_ast, stat.S_IRUSR | stat.S_IWUSR)
                     os.replace(str(tmp_ast), str(ast))
                 except Exception as e:
                     logger.debug("Failed syncing auth store to %s: %s", ast, e)
@@ -374,7 +407,7 @@ class AntigravityAuthManager:
 
         except Exception as e:
             logger.error("Failed to save credentials: %s", e)
-            if tmp_path.exists():
+            if tmp_path is not None and tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
 
     def clear_credentials(self) -> bool:
@@ -390,35 +423,11 @@ class AntigravityAuthManager:
             return False
 
     def discover_local_tokens(self) -> Optional[AntigravityCredentials]:
-        """Scan local Antigravity CLI/IDE session files for existing tokens."""
-        candidate_paths = [
-            Path.home() / ".gemini" / "antigravity-cli" / "settings.json",
-            Path.home() / ".gemini" / "antigravity" / "settings.json",
-            Path.home() / ".gemini" / "settings.json",
-        ]
-        for path in candidate_paths:
-            if not path.is_file():
-                continue
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                access_token = data.get("access_token") or data.get("oauth_token") or data.get("token")
-                refresh_token = data.get("refresh_token") or ""
-                expires_at = float(data.get("expires_at") or 0.0)
-                email = data.get("email") or ""
-                project_id = data.get("project_id") or ""
-                if access_token:
-                    logger.info("Discovered local Antigravity token from %s", path)
-                    return AntigravityCredentials(
-                        access_token=access_token,
-                        refresh_token=refresh_token,
-                        expires_at=expires_at,
-                        email=email,
-                        project_id=project_id,
-                        source=f"discovered:{path.name}",
-                    )
-            except Exception:
-                continue
+        """Disabled by policy: never scan or import local Antigravity CLI/IDE tokens.
+
+        Only accounts explicitly logged in via the plugin OAuth flow
+        (~/.hermes/auth/antigravity_tokens.json) are used.
+        """
         return None
 
     def refresh_access_token(self, creds: AntigravityCredentials) -> AntigravityCredentials:
@@ -461,53 +470,65 @@ class AntigravityAuthManager:
         return creds
 
     def resolve_valid_credentials(self, bearer_token: str = "") -> AntigravityCredentials:
-        """Resolve a valid, unexpired Antigravity credential (stored or discovered).
-        
+        """Resolve a valid, unexpired Antigravity credential from the plugin OAuth store.
+
         If bearer_token is provided, matches against stored credentials by access_token,
         email, or token prefix; if matched and expired, refreshes it automatically.
+        Strictly respects account pool cooldown and disabled states.
         """
         with self._lock:
             all_creds = self.load_all_stored_credentials()
             creds = None
+            pool_accounts_map: Dict[str, Any] = {}
+            pool = None
+            try:
+                try:
+                    from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+                except ImportError:
+                    from bridge.account_pool import AntigravityAccountPoolManager
+                pool = AntigravityAccountPoolManager(storage_path=self.auth_file)
+                for p_acc in pool.list_accounts():
+                    if p_acc.email:
+                        pool_accounts_map[p_acc.email.lower()] = p_acc
+            except Exception as e:
+                logger.debug("Account pool lookup failed: %s", e)
+
             if bearer_token and all_creds:
                 for c in all_creds:
                     if (
                         c.access_token == bearer_token
                         or (bearer_token.startswith("ya29.") and c.access_token.startswith(bearer_token[:20]))
-                        or c.email == bearer_token
-                        or c.email.startswith(bearer_token)
+                        or c.email.lower() == bearer_token.lower()
+                        or (c.email and c.email.lower().startswith(bearer_token.lower()))
                     ):
+                        p_acc = pool_accounts_map.get((c.email or "").lower())
+                        if p_acc is not None and not p_acc.is_available:
+                            raise RuntimeError(
+                                f"Antigravity account '{c.email}' is currently {p_acc.status} and unavailable."
+                            )
                         creds = c
                         break
 
-            if not creds:
-                try:
-                    try:
-                        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
-                    except ImportError:
-                        from bridge.account_pool import AntigravityAccountPoolManager
-                    pool = AntigravityAccountPoolManager(storage_path=self.auth_file)
-                    acc = pool.get_next_available_account()
-                    if acc:
-                        creds = AntigravityCredentials(
-                            access_token=acc.access_token,
-                            refresh_token=acc.refresh_token,
-                            expires_at=acc.expires_at,
-                            email=acc.email,
-                            project_id=acc.project_id,
-                            managed_project_id=acc.managed_project_id,
-                            tier_id=acc.tier_id,
-                            source=acc.source,
-                        )
-                except Exception as e:
-                    logger.debug("Account pool lookup fell back: %s", e)
+            if not creds and pool is not None:
+                acc = pool.get_next_available_account()
+                if acc:
+                    creds = AntigravityCredentials(
+                        access_token=acc.access_token,
+                        refresh_token=acc.refresh_token,
+                        expires_at=acc.expires_at,
+                        email=acc.email,
+                        project_id=acc.project_id,
+                        managed_project_id=acc.managed_project_id,
+                        tier_id=acc.tier_id,
+                        source=acc.source,
+                    )
+                elif pool_accounts_map:
+                    raise RuntimeError(
+                        "All Antigravity OAuth accounts in the pool are currently cooling down or disabled."
+                    )
 
-            if not creds:
+            if not creds and not pool_accounts_map:
                 creds = self.load_stored_credentials()
-            if not creds:
-                creds = self.discover_local_tokens()
-                if creds:
-                    self.save_credentials(creds)
 
             if not creds:
                 raise RuntimeError(
@@ -523,60 +544,443 @@ class AntigravityAuthManager:
                         f"Antigravity access token for {creds.email or 'account'} is expired and no refresh token is present. Please re-login."
                     )
 
-            if not creds.project_id:
-                creds.project_id = self.resolve_project_id(creds)
-                self.save_credentials(creds)
+            if creds.managed_project_id and creds.managed_project_id != DEFAULT_PROJECT_ID:
+                if not creds.project_id or creds.project_id == DEFAULT_PROJECT_ID:
+                    creds.project_id = creds.managed_project_id
+
+            if not creds.project_id or (creds.project_id == DEFAULT_PROJECT_ID and not creds.managed_project_id):
+                resolved_pid = self.resolve_project_id(creds)
+                if resolved_pid:
+                    creds.project_id = resolved_pid
+                    self.save_credentials(creds)
 
             return creds
 
-    def resolve_project_id(self, creds: AntigravityCredentials) -> str:
-        """Resolve Google Cloud Project ID from environment, stored creds, or Code Assist."""
+    @staticmethod
+    def _extract_companion_project_id(data: Dict[str, Any]) -> str:
+        """Extract cloudaicompanionProject from loadCodeAssist or onboardUser response."""
+        if not isinstance(data, dict):
+            return ""
+        raw_proj = data.get("cloudaicompanionProject")
+        if isinstance(raw_proj, str) and raw_proj.strip():
+            return raw_proj.strip()
+        if isinstance(raw_proj, dict):
+            pid = raw_proj.get("id") or raw_proj.get("projectId") or ""
+            if isinstance(pid, str) and pid.strip():
+                return pid.strip()
+        for key in ("projectId", "project_id"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+
+    def resolve_project_id(self, creds: Any) -> str:
+        """Resolve Google Cloud Companion Project ID via authentic loadCodeAssist + onboardUser handshake."""
+        if isinstance(creds, str):
+            creds = AntigravityCredentials(access_token=creds)
         env_proj = (os.getenv(ENV_PROJECT_ID) or "").strip()
         if env_proj:
             return env_proj
-        if creds.project_id:
+        if creds.managed_project_id and creds.managed_project_id != DEFAULT_PROJECT_ID:
+            creds.project_id = creds.managed_project_id
+            return creds.managed_project_id
+        if creds.project_id and creds.project_id != DEFAULT_PROJECT_ID:
             return creds.project_id
 
-        # Try loadCodeAssist
         try:
             try:
                 from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                headers = AntigravityFingerprint.build_headers(creds.access_token)
             except ImportError:
+                from bridge.fingerprint import AntigravityFingerprint
+            headers = AntigravityFingerprint.build_headers(creds.access_token)
+            metadata = AntigravityFingerprint.build_client_metadata()
+        except Exception:
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "Authorization": f"Bearer {creds.access_token}",
+                "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+            }
+            metadata = {
+                "ideType": "ANTIGRAVITY",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI",
+                "ideVersion": "2.23.1",
+            }
+
+        try:
+            load_body = json.dumps({"metadata": metadata}).encode("utf-8")
+            data: Dict[str, Any] = {}
+            for endpoint in (LOAD_CODE_ASSIST_ENDPOINT, FALLBACK_LOAD_CODE_ASSIST_ENDPOINT):
                 try:
-                    from bridge.fingerprint import AntigravityFingerprint
-                    headers = AntigravityFingerprint.build_headers(creds.access_token)
-                except Exception:
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {creds.access_token}",
-                        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
-                        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
-                        "Client-Metadata": json.dumps({
-                            "ideType": "ANTIGRAVITY",
-                            "platform": "PLATFORM_WINDOWS",
-                            "pluginType": "GEMINI",
-                            "applicationVersion": "2.11.0",
-                        }, separators=(",", ":")),
-                    }
-            req = urllib.request.Request(
-                LOAD_CODE_ASSIST_ENDPOINT,
-                data=b"{}",
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10.0) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            pid = data.get("cloudaicompanionProject") or data.get("projectId") or data.get("project_id") or ""
+                    req = urllib.request.Request(
+                        endpoint,
+                        data=load_body,
+                        headers=headers,
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=10.0) as resp:
+                        raw_bytes = resp.read()
+                        if resp.headers.get("Content-Encoding") == "gzip" or raw_bytes[:2] == b"\x1f\x8b":
+                            import gzip
+                            raw_bytes = gzip.decompress(raw_bytes)
+                        data = json.loads(raw_bytes.decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as he:
+                    if he.code in {404, 500, 502, 503, 504} and endpoint == LOAD_CODE_ASSIST_ENDPOINT:
+                        continue
+                    raise
+
+            current_tier = data.get("currentTier")
+            tier_id = ""
+            if isinstance(current_tier, dict):
+                tier_id = str(current_tier.get("id") or "")
+            if not tier_id:
+                tier_id = str(data.get("tierId") or "")
+            if tier_id:
+                creds.tier_id = tier_id
+
+            pid = self._extract_companion_project_id(data)
+            if not pid or not current_tier:
+                # Account has not completed onboarding yet; invoke onboardUser with default tier
+                allowed_tiers = data.get("allowedTiers")
+                onboard_tier_id = tier_id or "free-tier"
+                if isinstance(allowed_tiers, list) and allowed_tiers:
+                    for t in allowed_tiers:
+                        if isinstance(t, dict) and t.get("isDefault") and t.get("id"):
+                            onboard_tier_id = str(t["id"])
+                            break
+                    else:
+                        first_t = allowed_tiers[0]
+                        if isinstance(first_t, dict) and first_t.get("id"):
+                            onboard_tier_id = str(first_t["id"])
+
+                onboard_body = json.dumps({
+                    "tierId": onboard_tier_id,
+                    "metadata": metadata,
+                }).encode("utf-8")
+                ob_data: Dict[str, Any] = {}
+                for ob_endpoint in (ONBOARD_USER_ENDPOINT, FALLBACK_ONBOARD_USER_ENDPOINT):
+                    try:
+                        onboard_req = urllib.request.Request(
+                            ob_endpoint,
+                            data=onboard_body,
+                            headers=headers,
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(onboard_req, timeout=12.0) as ob_resp:
+                            raw_ob = ob_resp.read()
+                            if ob_resp.headers.get("Content-Encoding") == "gzip" or raw_ob[:2] == b"\x1f\x8b":
+                                import gzip
+                                raw_ob = gzip.decompress(raw_ob)
+                            ob_data = json.loads(raw_ob.decode("utf-8"))
+                        break
+                    except urllib.error.HTTPError as he:
+                        if he.code in {404, 500, 502, 503, 504} and ob_endpoint == ONBOARD_USER_ENDPOINT:
+                            continue
+                        raise
+                onboard_pid = self._extract_companion_project_id(ob_data)
+                if not onboard_pid and isinstance(ob_data.get("response"), dict):
+                    onboard_pid = self._extract_companion_project_id(ob_data["response"])
+                if onboard_pid:
+                    pid = onboard_pid
+                if onboard_tier_id and not creds.tier_id:
+                    creds.tier_id = onboard_tier_id
+
             if pid:
                 creds.project_id = pid
                 creds.managed_project_id = pid
-                creds.tier_id = data.get("tierId") or ""
                 return pid
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code == 403 and ("violation of terms of service" in err_body.lower() or "disabled in this account" in err_body.lower()):
+                if getattr(creds, "email", ""):
+                    try:
+                        try:
+                            from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+                        except ImportError:
+                            from bridge.account_pool import AntigravityAccountPoolManager
+                        pool = AntigravityAccountPoolManager(storage_path=self.auth_file)
+                        pool.mark_account_disabled(creds.email, reason="HTTP 403 TOS_VIOLATION on loadCodeAssist")
+                    except Exception:
+                        pass
+            logger.debug("loadCodeAssist/onboardUser HTTP %d: %s", e.code, err_body[:200])
         except Exception as e:
-            logger.debug("loadCodeAssist project discovery fell back to default: %s", e)
+            logger.debug("loadCodeAssist/onboardUser project discovery fell back: %s", e)
 
-        return DEFAULT_PROJECT_ID
+        return creds.project_id or DEFAULT_PROJECT_ID
+
+    def probe_account_unlock_status(self, email: str) -> Dict[str, Any]:
+        """Probe Google Code Assist (loadCodeAssist) for a specific account to check if it has been unlocked.
+
+        If Google returns 200 OK, automatically restores the account status to 'active' in the pool.
+        If Google still returns 403 TOS_VIOLATION, keeps it 'disabled' and extracts the appeal URL.
+        """
+        target = (email or "").strip().lower()
+        if not target:
+            return {"ok": False, "unlocked": False, "message": "Email tài khoản không hợp lệ."}
+
+        try:
+            from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+        except ImportError:
+            from bridge.account_pool import AntigravityAccountPoolManager
+
+        pool = AntigravityAccountPoolManager(storage_path=self.auth_file)
+        acc = pool.get_account(target)
+        if not acc:
+            return {"ok": False, "unlocked": False, "message": f"Không tìm thấy tài khoản '{target}' trong pool."}
+
+        creds = AntigravityCredentials(
+            access_token=acc.access_token,
+            refresh_token=acc.refresh_token,
+            expires_at=acc.expires_at,
+            email=acc.email,
+            project_id=acc.project_id,
+            managed_project_id=acc.managed_project_id,
+            tier_id=acc.tier_id,
+            source=acc.source,
+        )
+        if creds.is_expired and creds.refresh_token:
+            try:
+                creds = self.refresh_access_token(creds)
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "email": target,
+                    "unlocked": False,
+                    "status": acc.status,
+                    "message": f"Không thể làm mới token cho {target} (vui lòng đăng nhập lại): {e}",
+                }
+
+        try:
+            try:
+                from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+            except ImportError:
+                from bridge.fingerprint import AntigravityFingerprint
+            headers = AntigravityFingerprint.build_headers(creds.access_token)
+            metadata = AntigravityFingerprint.build_client_metadata()
+        except Exception:
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "Authorization": f"Bearer {creds.access_token}",
+                "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+            }
+            metadata = {
+                "ideType": "ANTIGRAVITY",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI",
+                "ideVersion": "2.23.1",
+            }
+
+        try:
+            load_body = json.dumps({"metadata": metadata}).encode("utf-8")
+            req = urllib.request.Request(
+                LOAD_CODE_ASSIST_ENDPOINT,
+                data=load_body,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=12.0) as resp:
+                raw_bytes = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip" or raw_bytes[:2] == b"\x1f\x8b":
+                    import gzip
+                    raw_bytes = gzip.decompress(raw_bytes)
+                data = json.loads(raw_bytes.decode("utf-8"))
+
+            current_tier = data.get("currentTier")
+            tier_id = ""
+            if isinstance(current_tier, dict):
+                tier_id = str(current_tier.get("id") or "")
+            if not tier_id:
+                tier_id = str(data.get("tierId") or "")
+            pid = self._extract_companion_project_id(data) or creds.effective_project_id or DEFAULT_PROJECT_ID
+
+            creds.project_id = pid
+            creds.managed_project_id = pid
+            if tier_id:
+                creds.tier_id = tier_id
+
+            self.save_credentials(creds, reset_status=True)
+            pool.add_or_update_account(creds, reset_status=True)
+            return {
+                "ok": True,
+                "email": target,
+                "unlocked": True,
+                "status": "active",
+                "project_id": pid,
+                "tier_id": tier_id or "free-tier",
+                "message": f"Tài khoản {target} ĐÃ ĐƯỢC GOOGLE MỞ KHÓA và khôi phục trạng thái SẴN SÀNG!",
+            }
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            appeal_url = "https://forms.gle/hGzM9MEUv2azZsrb9"
+            reason = f"HTTP_{e.code}"
+            try:
+                err_json = json.loads(err_body)
+                details = err_json.get("error", {}).get("details", [])
+                for d in details:
+                    if isinstance(d, dict):
+                        if d.get("reason"):
+                            reason = str(d["reason"])
+                        meta_d = d.get("metadata")
+                        if isinstance(meta_d, dict) and meta_d.get("appeal_url"):
+                            appeal_url = str(meta_d["appeal_url"])
+            except Exception:
+                pass
+
+            if e.code == 403 and ("tos_violation" in reason.lower() or "violation of terms of service" in err_body.lower() or "disabled in this account" in err_body.lower()):
+                pool.mark_account_disabled(target, reason=f"HTTP 403 {reason}")
+                return {
+                    "ok": True,
+                    "email": target,
+                    "unlocked": False,
+                    "status": "disabled",
+                    "reason": reason,
+                    "appeal_url": appeal_url,
+                    "message": f"Tài khoản {target} vẫn đang bị Google khóa ({reason}). Link kháng nghị: {appeal_url}",
+                }
+            return {
+                "ok": False,
+                "email": target,
+                "unlocked": False,
+                "status": acc.status,
+                "reason": reason,
+                "message": f"Kiểm tra {target} trả về HTTP {e.code}: {err_body[:160]}",
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "email": target,
+                "unlocked": False,
+                "status": acc.status,
+                "message": f"Lỗi kết nối khi kiểm tra {target}: {e}",
+            }
+
+    def create_pkce_auth_session(self, port: int = DEFAULT_REDIRECT_PORT) -> Dict[str, Any]:
+        """Generate a PKCE authorization session (URL + verifier + state) for remote/mobile or local login."""
+        session_id = secrets.token_hex(16)
+        code_verifier = secrets.token_urlsafe(64)[:128]
+        code_challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("utf-8")).digest())
+            .decode("utf-8")
+            .rstrip("=")
+        )
+        state = secrets.token_hex(16)
+        redirect_uri = f"http://{REDIRECT_HOST}:{port}{CALLBACK_PATH}"
+        client_id = self.get_client_id()
+
+        auth_params = {
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "scope": OAUTH_SCOPES,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+            "access_type": "offline",
+            "prompt": "consent",
+        }
+        auth_url = f"{AUTH_ENDPOINT}?{urllib.parse.urlencode(auth_params)}"
+        return {
+            "session_id": session_id,
+            "code_verifier": code_verifier,
+            "state": state,
+            "redirect_uri": redirect_uri,
+            "port": port,
+            "auth_url": auth_url,
+            "created_at": time.time(),
+            "expires_at": time.time() + 600.0,
+        }
+
+    def complete_pkce_auth_session(
+        self,
+        callback_or_code: str,
+        code_verifier: str,
+        redirect_uri: str,
+        expected_state: Optional[str] = None,
+    ) -> AntigravityCredentials:
+        """Exchange a pasted callback URL (or raw authorization code) for OAuth tokens and onboard account."""
+        raw = (callback_or_code or "").strip()
+        if not raw:
+            raise ValueError("Vui lòng nhập đường link callback hoặc mã code OAuth.")
+
+        auth_code = raw
+        if "://" in raw or raw.startswith("localhost:") or raw.startswith("127.0.0.1:") or "?" in raw or "code=" in raw:
+            if not raw.startswith("http") and ("localhost" in raw or "127.0.0.1" in raw):
+                raw = "http://" + raw
+            parsed = urllib.parse.urlparse(raw)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if not qs and "code=" in raw:
+                qs = urllib.parse.parse_qs(raw.split("?", 1)[-1])
+            if "error" in qs and qs["error"]:
+                raise RuntimeError(f"Google OAuth trả về lỗi: {qs['error'][0]}")
+            returned_state = qs.get("state", [None])[0]
+            if expected_state and returned_state != expected_state:
+                raise ValueError("State OAuth không khớp hoặc bị thiếu (vui lòng dùng đúng link đăng nhập vừa mở).")
+            extracted_code = qs.get("code", [None])[0]
+            if not extracted_code:
+                raise ValueError("Không tìm thấy tham số 'code=' trong đường link đã dán.")
+            auth_code = extracted_code
+
+        client_id = self.get_client_id()
+        client_secret = self.get_client_secret()
+        token_payload = urllib.parse.urlencode({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": auth_code,
+            "code_verifier": code_verifier,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            TOKEN_ENDPOINT,
+            data=token_payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20.0) as resp:
+            token_data = json.loads(resp.read().decode("utf-8"))
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise RuntimeError("Không nhận được access_token từ Google OAuth.")
+        refresh_token = token_data.get("refresh_token") or ""
+        expires_in = float(token_data.get("expires_in") or 3600.0)
+
+        email = ""
+        try:
+            user_req = urllib.request.Request(
+                f"{USERINFO_ENDPOINT}?alt=json",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            with urllib.request.urlopen(user_req, timeout=10.0) as user_resp:
+                user_info = json.loads(user_resp.read().decode("utf-8"))
+                email = user_info.get("email") or ""
+        except Exception:
+            pass
+
+        creds = AntigravityCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=time.time() + expires_in,
+            email=email,
+            source="oauth_pkce",
+        )
+        creds.project_id = self.resolve_project_id(creds)
+        self.save_credentials(creds)
+        return creds
 
     def login_interactive(
         self,
@@ -594,29 +998,13 @@ class AntigravityAuthManager:
         timeout_seconds: float = 300.0,
     ) -> AntigravityCredentials:
         """Execute Google OAuth 2.0 Authorization Code flow with PKCE."""
-        code_verifier = secrets.token_urlsafe(64)[:128]
-        code_challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("utf-8")).digest())
-            .decode("utf-8")
-            .rstrip("=")
-        )
-        state = secrets.token_hex(16)
-        redirect_uri = f"http://{REDIRECT_HOST}:{port}{CALLBACK_PATH}"
+        session = self.create_pkce_auth_session(port=port)
+        code_verifier = session["code_verifier"]
+        state = session["state"]
+        redirect_uri = session["redirect_uri"]
+        auth_url = session["auth_url"]
         client_id = self.get_client_id()
         client_secret = self.get_client_secret()
-
-        auth_params = {
-            "client_id": client_id,
-            "response_type": "code",
-            "redirect_uri": redirect_uri,
-            "scope": OAUTH_SCOPES,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "state": state,
-            "access_type": "offline",
-            "prompt": "consent",
-        }
-        auth_url = f"{AUTH_ENDPOINT}?{urllib.parse.urlencode(auth_params)}"
 
         auth_code_holder: Dict[str, Optional[str]] = {"code": None, "error": None}
 
@@ -642,7 +1030,8 @@ class AntigravityAuthManager:
                         )
                     else:
                         auth_code_holder["error"] = qs.get("error", ["Unknown error"])[0]
-                        self._send_html(f"<h3>Authentication Failed</h3><p>{auth_code_holder['error']}</p>", 400)
+                        safe_err = html.escape(str(auth_code_holder["error"]))
+                        self._send_html(f"<h3>Authentication Failed</h3><p>{safe_err}</p>", 400)
                 else:
                     self.send_response(404)
                     self.end_headers()

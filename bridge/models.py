@@ -48,6 +48,53 @@ FALLBACK_QUOTA_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:
 DEFAULT_CACHE_TTL_SECONDS = 3600.0  # 1 hour
 DEFAULT_PROJECT_ID = "aicode-consumers"
 
+# Direct mapping for legacy / sunset / alias model identifiers to verified live Code Assist backend models
+BACKEND_MODEL_ALIASES: Dict[str, str] = {
+    # Gemini 3.7 family -> Gemini 3.8
+    "gemini-3.7-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.7-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.7-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.7-flash-tiered": "gemini-3.8-flash-tiered",
+    "gemini-3.7-flash": "gemini-3.8-flash-high",
+    "gemini-3.7": "gemini-3.8-flash-high",
+
+    # Gemini 3.6 family -> Gemini 3.8
+    "gemini-3.6-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.6-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.6-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.6-flash-tiered": "gemini-3.8-flash-tiered",
+    "gemini-3.6-flash": "gemini-3.8-flash-high",
+
+    # Gemini 3.5 family
+    "gemini-3.5-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.5-flash-extra-low": "gemini-3.8-flash-low",
+    "gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.5-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.5-flash": "gemini-3.8-flash-high",
+    "gemini-3.5-flash-lite": "gemini-3.8-flash-low",
+
+    # Gemini 3.1 Pro / Pro agent / 2.5 Pro -> Gemini 3.8 Flash High
+    "gemini-3.1-pro-high": "gemini-3.8-flash-high",
+    "gemini-3.1-pro-low": "gemini-3.8-flash-low",
+    "gemini-pro-agent": "gemini-3.8-flash-high",
+    "gemini-2.5-pro": "gemini-3.8-flash-high",
+    "gemini-pro": "gemini-3.8-flash-high",
+
+    # Claude aliases
+    "claude-3-7-sonnet": "claude-sonnet-4-6",
+    "claude-3.7-sonnet": "claude-sonnet-4-6",
+    "claude-sonnet-4.6": "claude-sonnet-4-6",
+    "claude-sonnet": "claude-sonnet-4-6",
+    "claude-3-7-opus": "claude-opus-4-6-thinking",
+    "claude-3.7-opus": "claude-opus-4-6-thinking",
+    "claude-opus-4-6": "claude-opus-4-6-thinking",
+    "claude-opus": "claude-opus-4-6-thinking",
+
+    # GPT OSS aliases
+    "gpt-oss": "gpt-oss-120b-medium",
+    "gpt-oss-120b": "gpt-oss-120b-medium",
+}
+
 # Curated static baseline fallback models (used if offline / unauthenticated)
 BASELINE_MODELS: Dict[str, Dict[str, Any]] = {
     "gemini-3-flash-agent": {
@@ -496,10 +543,12 @@ class ModelDiscoveryManager:
         auth_manager: Optional[AntigravityAuthManager] = None,
         cache_file: Optional[Path] = None,
         ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS,
+        is_bridge_server: bool = False,
     ) -> None:
         self.auth_manager = auth_manager or AntigravityAuthManager()
         self.cache_file = cache_file or (get_hermes_dir() / "auth" / "antigravity_models_cache.json")
         self.ttl_seconds = ttl_seconds
+        self.is_bridge_server = is_bridge_server
         self._lock = threading.Lock()
         self._memory_cache: Optional[Dict[str, Any]] = None
 
@@ -507,13 +556,21 @@ class ModelDiscoveryManager:
         return self.cache_file
 
     def _fetch_from_local_bridge(self) -> Optional[Dict[str, Any]]:
-        """Attempt to fetch live models from local bridge daemon on port 8100."""
-        if os.environ.get("PYTEST_CURRENT_TEST"):
+        """Attempt to fetch live models from local bridge daemon on port 8100 (only from external CLI/processes)."""
+        if (
+            os.environ.get("PYTEST_CURRENT_TEST")
+            or self.is_bridge_server
+            or os.environ.get("ANTIGRAVITY_IN_BRIDGE_SERVER") == "1"
+        ):
             return None
         try:
             req = urllib.request.Request(
                 "http://127.0.0.1:8100/v1/models",
-                headers={"Accept": "application/json", "User-Agent": "Antigravity-Discovery/1.0"},
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Antigravity-Discovery/1.0",
+                    "X-Antigravity-Internal-Probe": "1",
+                },
             )
             with urllib.request.urlopen(req, timeout=1.5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -566,6 +623,62 @@ class ModelDiscoveryManager:
         except Exception as e:
             logger.warning("Failed to save model cache to %s: %s", self.cache_file, e)
 
+    def _resolve_candidate_credentials(self) -> List[Any]:
+        """Resolve all valid and available plugin OAuth credentials from primary and multi-account pool."""
+        candidates: List[Any] = []
+        seen_tokens: set[str] = set()
+
+        try:
+            primary = self.auth_manager.resolve_valid_credentials()
+            if primary and getattr(primary, "access_token", ""):
+                candidates.append(primary)
+                seen_tokens.add(primary.access_token)
+        except Exception as e:
+            logger.debug("Primary credential resolution failed: %s", e)
+
+        auth_file = getattr(self.auth_manager, "auth_file", None)
+        if isinstance(auth_file, Path):
+            try:
+                try:
+                    from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+                except ImportError:
+                    from bridge.account_pool import AntigravityAccountPoolManager
+                pool = AntigravityAccountPoolManager(storage_path=auth_file)
+                for acc in pool.list_accounts():
+                    if not acc.email or not acc.is_available:
+                        continue
+                    try:
+                        c = self.auth_manager.resolve_valid_credentials(bearer_token=acc.email)
+                        tok = getattr(c, "access_token", "")
+                        if c and tok and tok not in seen_tokens:
+                            candidates.append(c)
+                            seen_tokens.add(tok)
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug("Pool credential enumeration failed: %s", e)
+
+        return candidates
+
+    def _set_negative_memory_cache(self, models_dict: Dict[str, Any]) -> None:
+        """Cache fallback models in RAM for up to 5 minutes to prevent tight retry loops."""
+        neg_ttl = min(float(self.ttl_seconds), 300.0)
+        with self._lock:
+            self._memory_cache = {
+                "models": models_dict,
+                "cached_at": time.time() - (float(self.ttl_seconds) - neg_ttl),
+            }
+
+    @staticmethod
+    def _decode_response_bytes(resp: Any) -> str:
+        raw_bytes = resp.read()
+        if isinstance(raw_bytes, bytes):
+            if raw_bytes[:2] == b"\x1f\x8b":
+                import gzip
+                raw_bytes = gzip.decompress(raw_bytes)
+            return raw_bytes.decode("utf-8")
+        return str(raw_bytes)
+
     def fetch_models(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Fetch models dynamically from Google Code Assist API or return cached."""
         with self._lock:
@@ -577,136 +690,144 @@ class ModelDiscoveryManager:
                     self._memory_cache = disk_cache
                     return disk_cache.get("models", {})
 
-        # Resolve credentials
-        try:
-            creds = self.auth_manager.resolve_valid_credentials()
-        except Exception as e:
-            logger.debug("Could not resolve credentials for model discovery: %s", e)
+        candidate_creds = self._resolve_candidate_credentials()
+        if not candidate_creds:
             local_models = self._fetch_from_local_bridge()
             if local_models:
+                self._set_negative_memory_cache(local_models)
                 return local_models
-            return self._fallback_models()
-
-        raw_pid = getattr(creds, "project_id", None)
-        candidate_projects: List[str] = []
-        if isinstance(raw_pid, str) and raw_pid.strip():
-            candidate_projects.append(raw_pid.strip())
-        if DEFAULT_PROJECT_ID not in candidate_projects:
-            candidate_projects.append(DEFAULT_PROJECT_ID)
-        if "" not in candidate_projects:
-            candidate_projects.append("")
-        if "" not in candidate_projects:
-            candidate_projects.append("")
+            fallback = self._fallback_models()
+            self._set_negative_memory_cache(fallback)
+            return fallback
 
         endpoints = [MODELS_ENDPOINT, FALLBACK_MODELS_ENDPOINT]
         raw_models: Dict[str, Any] = {}
-        successful_pid = DEFAULT_PROJECT_ID
+        successful_pid = ""
+        successful_creds = candidate_creds[0]
 
-        for pid in candidate_projects:
-            payload_bytes = json.dumps({"project": pid}).encode("utf-8")
-            try:
-                from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                headers = AntigravityFingerprint.build_headers(getattr(creds, "access_token", ""), project_id=pid)
-            except ImportError:
+        for creds in candidate_creds:
+            eff_pid = getattr(creds, "effective_project_id", None)
+            raw_pid = getattr(creds, "project_id", None)
+            candidate_projects: List[str] = []
+            if isinstance(eff_pid, str) and eff_pid.strip() and eff_pid.strip() != DEFAULT_PROJECT_ID:
+                candidate_projects.append(eff_pid.strip())
+            if (
+                isinstance(raw_pid, str)
+                and raw_pid.strip()
+                and raw_pid.strip() != DEFAULT_PROJECT_ID
+                and raw_pid.strip() not in candidate_projects
+            ):
+                candidate_projects.append(raw_pid.strip())
+            if "" not in candidate_projects:
+                candidate_projects.append("")
+
+            for pid in candidate_projects:
+                payload_bytes = json.dumps({"project": pid}).encode("utf-8")
                 try:
-                    from bridge.fingerprint import AntigravityFingerprint
+                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
                     headers = AntigravityFingerprint.build_headers(getattr(creds, "access_token", ""), project_id=pid)
-                except Exception:
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {getattr(creds, 'access_token', '')}",
-                        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
-                        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
-                        "Client-Metadata": json.dumps({
-                            "ideType": "ANTIGRAVITY",
-                            "platform": "PLATFORM_WINDOWS",
-                            "pluginType": "GEMINI",
-                            "applicationVersion": "2.11.0",
-                        }, separators=(",", ":")),
-                    }
+                except ImportError:
+                    try:
+                        from bridge.fingerprint import AntigravityFingerprint
+                        headers = AntigravityFingerprint.build_headers(getattr(creds, "access_token", ""), project_id=pid)
+                    except Exception:
+                        headers = {
+                            "Content-Type": "application/json",
+                            "Accept-Encoding": "gzip",
+                            "Authorization": f"Bearer {getattr(creds, 'access_token', '')}",
+                            "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+                            "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
+                        }
 
-            for ep in endpoints:
-                try:
-                    req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
-                    with urllib.request.urlopen(req, timeout=12.0) as resp:
-                        resp_data = json.loads(resp.read().decode("utf-8"))
-                        raw_models = resp_data.get("models", {})
-                        if raw_models:
-                            successful_pid = pid
-                            logger.info("Successfully discovered %d models from %s (project: %s)", len(raw_models), ep, pid)
-                            break
-                except Exception as e:
-                    logger.debug("Failed querying models endpoint %s with project %s: %s", ep, pid, e)
+                for ep in endpoints:
+                    try:
+                        req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=12.0) as resp:
+                            resp_data = json.loads(self._decode_response_bytes(resp))
+                            raw_models = resp_data.get("models", {})
+                            if raw_models:
+                                successful_pid = pid
+                                successful_creds = creds
+                                logger.info(
+                                    "Successfully discovered %d models from %s (project: %s, account: %s)",
+                                    len(raw_models), ep, pid, getattr(creds, "email", ""),
+                                )
+                                break
+                    except Exception as e:
+                        logger.debug("Failed querying models endpoint %s with project %s: %s", ep, pid, e)
+                if raw_models:
+                    break
             if raw_models:
                 break
 
         if not raw_models:
             local_models = self._fetch_from_local_bridge()
             if local_models:
+                self._set_negative_memory_cache(local_models)
                 return local_models
             logger.warning("Failed to query live models from Code Assist; using baseline fallback.")
-            return self._fallback_models()
+            fallback = self._fallback_models()
+            self._set_negative_memory_cache(fallback)
+            return fallback
 
         cache_data = {
             "models": raw_models,
             "project_id": successful_pid,
-            "email": getattr(creds, "email", ""),
+            "email": getattr(successful_creds, "email", ""),
         }
         with self._lock:
             self._save_cache_to_disk(cache_data)
         return raw_models
 
     def fetch_quota_summary(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """Fetch quota summary from retrieveUserQuotaSummary."""
-        try:
-            creds = self.auth_manager.resolve_valid_credentials()
-        except Exception as e:
-            logger.debug("Could not resolve credentials for quota discovery: %s", e)
+        """Fetch quota summary from retrieveUserQuotaSummary across available accounts."""
+        candidate_creds = self._resolve_candidate_credentials()
+        if not candidate_creds:
             return {}
 
-        raw_pid = getattr(creds, "project_id", None)
-        candidate_projects: List[str] = []
-        if isinstance(raw_pid, str) and raw_pid.strip():
-            candidate_projects.append(raw_pid.strip())
-        if DEFAULT_PROJECT_ID not in candidate_projects:
-            candidate_projects.append(DEFAULT_PROJECT_ID)
-        if "" not in candidate_projects:
-            candidate_projects.append("")
-        if "" not in candidate_projects:
-            candidate_projects.append("")
+        for creds in candidate_creds:
+            eff_pid = getattr(creds, "effective_project_id", None)
+            raw_pid = getattr(creds, "project_id", None)
+            candidate_projects: List[str] = []
+            if isinstance(eff_pid, str) and eff_pid.strip() and eff_pid.strip() != DEFAULT_PROJECT_ID:
+                candidate_projects.append(eff_pid.strip())
+            if (
+                isinstance(raw_pid, str)
+                and raw_pid.strip()
+                and raw_pid.strip() != DEFAULT_PROJECT_ID
+                and raw_pid.strip() not in candidate_projects
+            ):
+                candidate_projects.append(raw_pid.strip())
+            if "" not in candidate_projects:
+                candidate_projects.append("")
 
-        for pid in candidate_projects:
-            payload_bytes = json.dumps({"project": pid}).encode("utf-8")
-            try:
-                from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                headers = AntigravityFingerprint.build_headers(getattr(creds, "access_token", ""), project_id=pid)
-            except ImportError:
+            for pid in candidate_projects:
+                payload_bytes = json.dumps({"project": pid}).encode("utf-8")
                 try:
-                    from bridge.fingerprint import AntigravityFingerprint
+                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
                     headers = AntigravityFingerprint.build_headers(getattr(creds, "access_token", ""), project_id=pid)
-                except Exception:
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {getattr(creds, 'access_token', '')}",
-                        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
-                        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
-                        "Client-Metadata": json.dumps({
-                            "ideType": "ANTIGRAVITY",
-                            "platform": "PLATFORM_WINDOWS",
-                            "pluginType": "GEMINI",
-                            "applicationVersion": "2.11.0",
-                        }, separators=(",", ":")),
-                    }
+                except ImportError:
+                    try:
+                        from bridge.fingerprint import AntigravityFingerprint
+                        headers = AntigravityFingerprint.build_headers(getattr(creds, "access_token", ""), project_id=pid)
+                    except Exception:
+                        headers = {
+                            "Content-Type": "application/json",
+                            "Accept-Encoding": "gzip",
+                            "Authorization": f"Bearer {getattr(creds, 'access_token', '')}",
+                            "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+                            "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
+                        }
 
-            for ep in [QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT]:
-                try:
-                    req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
-                    with urllib.request.urlopen(req, timeout=10.0) as resp:
-                        res = json.loads(resp.read().decode("utf-8"))
-                        if res:
-                            return res
-                except Exception as e:
-                    logger.debug("Failed querying quota endpoint %s with project %s: %s", ep, pid, e)
+                for ep in [QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT]:
+                    try:
+                        req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=10.0) as resp:
+                            res = json.loads(self._decode_response_bytes(resp))
+                            if res:
+                                return res
+                    except Exception as e:
+                        logger.debug("Failed querying quota endpoint %s with project %s: %s", ep, pid, e)
         return {}
 
     def _fallback_models(self) -> Dict[str, Any]:
@@ -787,7 +908,7 @@ class ModelDiscoveryManager:
             Tuple[code_assist_model_name, metadata_dict]
         """
         if not requested_model:
-            return ("gemini-3-flash-agent", {})
+            return ("gemini-3.8-flash-high", {})
 
         norm = requested_model.lower().strip()
         if "/" in norm:
@@ -796,24 +917,40 @@ class ModelDiscoveryManager:
         models = self.get_discovered_models(force_refresh=False)
         model_map = {m.id.lower(): m for m in models}
 
-        # 1. Exact match on model ID
+        # 1. Alias / Sunset mapping to live backend model
+        target_norm = BACKEND_MODEL_ALIASES.get(norm, norm)
+        if target_norm in model_map:
+            target = model_map[target_norm]
+            return (target.id, target.to_openai_dict())
+
+        # 2. Exact match on model ID (if not an alias)
         if norm in model_map:
             target = model_map[norm]
             return (target.id, target.to_openai_dict())
 
-        # 2. Match by display name substring or slug alias
+        # 2b. On cache miss for an unknown model, attempt a live refresh from Antigravity IDE
+        last_refresh = getattr(self, "_last_miss_refresh_ts", 0.0)
+        if (time.time() - last_refresh) > 60.0 and target_norm == norm:
+            self._last_miss_refresh_ts = time.time()
+            models = self.get_discovered_models(force_refresh=True)
+            model_map = {m.id.lower(): m for m in models}
+            if norm in model_map:
+                target = model_map[norm]
+                return (target.id, target.to_openai_dict())
+
+        # 3. Match by display name substring or slug alias
         alias_rules = [
             ("gemini-3.8-flash", ["gemini-3.8-flash-tiered", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"]),
-            ("gemini-3.8", ["gemini-3.8-flash-tiered", "gemini-3.8-flash-high", "gemini-3.8-flash-medium"]),
-            ("gemini-3.7-flash", ["gemini-3.7-flash-tiered", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3-flash-agent"]),
-            ("gemini-3.7", ["gemini-3.7-flash-tiered", "gemini-3.7-flash-high"]),
-            ("gemini-3.6-flash", ["gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"]),
-            ("gemini-3.5-flash", ["gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", "gemini-3.5-flash-lite"]),
-            ("gemini-3.1-pro", ["gemini-3.1-pro-high", "gemini-3.1-pro-low", "gemini-pro-agent"]),
-            ("gemini-pro", ["gemini-3.1-pro-high", "gemini-3.1-pro-low"]),
-            ("gemini-flash", ["gemini-3.8-flash-tiered", "gemini-3.7-flash-tiered", "gemini-3.6-flash-high", "gemini-3-flash"]),
-            ("gemini-2.5-flash", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash-thinking"]),
-            ("gemini-2.5-pro", ["gemini-2.5-pro"]),
+            ("gemini-3.8", ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-tiered", "gemini-3.8-flash-low"]),
+            ("gemini-3.7-flash", ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low", "gemini-3.8-flash-tiered"]),
+            ("gemini-3.7", ["gemini-3.8-flash-high", "gemini-3.8-flash-medium"]),
+            ("gemini-3.6-flash", ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"]),
+            ("gemini-3.5-flash", ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high"]),
+            ("gemini-3.1-pro", ["gemini-3.8-flash-high", "gemini-3.8-flash-low"]),
+            ("gemini-pro", ["gemini-3.8-flash-high"]),
+            ("gemini-flash", ["gemini-3.8-flash-high", "gemini-3.8-flash-tiered", "gemini-3-flash-agent", "gemini-3-flash"]),
+            ("gemini-2.5-flash", ["gemini-2.5-flash", "gemini-3.8-flash-low"]),
+            ("gemini-2.5-pro", ["gemini-2.5-pro", "gemini-3.8-flash-high"]),
             ("claude-sonnet-4-6", ["claude-sonnet-4-6"]),
             ("claude-sonnet-4.6", ["claude-sonnet-4-6"]),
             ("claude-3-7-sonnet", ["claude-sonnet-4-6"]),
@@ -832,12 +969,16 @@ class ModelDiscoveryManager:
                         target = model_map[cand.lower()]
                         return (target.id, target.to_openai_dict())
 
-        # 3. Fuzzy search in model IDs
+        # 4. Fuzzy search in model IDs
         for mid, m in model_map.items():
             if norm in mid:
                 return (m.id, m.to_openai_dict())
 
         # Fallback to recommended or first available
+        for m in models:
+            if "3.8" in m.id and "flash" in m.id:
+                return (m.id, m.to_openai_dict())
+
         for m in models:
             if "flash" in m.id:
                 return (m.id, m.to_openai_dict())
@@ -845,4 +986,4 @@ class ModelDiscoveryManager:
         if models:
             return (models[0].id, models[0].to_openai_dict())
 
-        return ("gemini-3-flash-agent", {})
+        return ("gemini-3.8-flash-high", {})

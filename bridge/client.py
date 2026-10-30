@@ -9,6 +9,7 @@ Implements:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -101,47 +102,86 @@ ANTIGRAVITY_SUPPORTED_MODELS = [
 ]
 
 MODEL_ALIAS_MAP = {
-    # Gemini 3.7 Flash — IDE shows "Gemini 3.7 Flash Medium"
-    "gemini-3.7-flash": "gemini-3-flash-agent",
-    "gemini-3-flash": "gemini-3-flash-agent",
-    "gemini-3.7-flash-high": "gemini-3-flash-agent",
-    "gemini-3.7-flash-medium": "gemini-3-flash-agent",
-    "gemini-3.7-flash-low": "gemini-3-flash-agent",
-    # Gemini 3.7 Pro — NOT in IDE, map to flash as fallback
-    "gemini-3.7-pro": "gemini-3-flash-agent",
-    "gemini-3-pro": "gemini-3-flash-agent",
-    "gemini-pro": "gemini-3-flash-agent",
-    # Gemini 3.6 Flash
-    "gemini-3.6-flash": "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
-    # Gemini 3.5 Flash
-    "gemini-3.5-flash": "gemini-3-flash-agent",
-    "gemini-3.5-flash-medium": "gemini-3-flash-agent",
-    "gemini-2.5-flash": "gemini-3-flash-agent",
-    # Gemini 3.1 Pro
-    "gemini-3.1-pro": "gemini-3.1-pro-low",
-    "gemini-3.1-pro-low": "gemini-3.1-pro-low",
-    "gemini-2.5-pro": "gemini-3.1-pro-low",
+    # Gemini 3.8 Pro / Flash
+    "gemini-3.8-pro-high": "gemini-3.8-pro-high",
+    "gemini-3.8-pro-low": "gemini-3.8-pro-low",
+    "gemini-3.8-pro": "gemini-3.8-pro-high",
+    "gemini-3.8-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.8-flash-tiered": "gemini-3.8-flash-tiered",
+    "gemini-3.8-flash": "gemini-3.8-flash-high",
+    "gemini-3.8": "gemini-3.8-flash-high",
+
+    # Gemini 3.7 Flash -> Gemini 3.8 Flash
+    "gemini-3.7-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.7-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.7-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.7-flash-tiered": "gemini-3.8-flash-tiered",
+    "gemini-3.7-flash": "gemini-3.8-flash-high",
+    "gemini-3.7": "gemini-3.8-flash-high",
+
+    # Gemini 3.6 Flash -> Gemini 3.8 Flash
+    "gemini-3.6-flash": "gemini-3.8-flash-high",
+    "gemini-3.6-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.6-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.6-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.6-flash-tiered": "gemini-3.8-flash-tiered",
+
+    # Gemini 3.5 / Legacy Flash
+    "gemini-3.5-flash": "gemini-3.8-flash-high",
+    "gemini-3.5-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.5-flash-lite": "gemini-3.8-flash-low",
+    "gemini-3-flash": "gemini-3-flash",
+    "gemini-3-flash-agent": "gemini-3-flash-agent",
+    "gemini-2.5-flash": "gemini-2.5-flash",
+
+    # Gemini Pro -> Gemini 3.8 Flash High
+    "gemini-3.7-pro": "gemini-3.8-flash-high",
+    "gemini-3-pro": "gemini-3.8-flash-high",
+    "gemini-pro": "gemini-3.8-flash-high",
+    "gemini-pro-agent": "gemini-3.8-flash-high",
+    "gemini-3.1-pro": "gemini-3.8-flash-high",
+    "gemini-3.1-pro-high": "gemini-3.8-flash-high",
+    "gemini-3.1-pro-low": "gemini-3.8-flash-low",
+    "gemini-2.5-pro": "gemini-3.8-flash-high",
+
     # Claude Sonnet 4.6
     "claude-sonnet-4-6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
     "claude-3-7-sonnet": "claude-sonnet-4-6",
     "claude-3.7-sonnet": "claude-sonnet-4-6",
-    # Claude Opus 4.6 — maps to sonnet (opus not always available)
-    "claude-opus-4-6": "claude-sonnet-4-6",
-    "claude-opus-4.6": "claude-sonnet-4-6",
-    "claude-3-7-opus": "claude-sonnet-4-6",
-    "claude-3.7-opus": "claude-sonnet-4-6",
-    # GPT-OSS 120B — maps to flash as safe fallback
-    "gpt-oss-120b": "gemini-3-flash-agent",
+    "claude-sonnet": "claude-sonnet-4-6",
+
+    # Claude Opus 4.6
+    "claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+    "claude-opus-4-6": "claude-opus-4-6-thinking",
+    "claude-opus-4.6": "claude-opus-4-6-thinking",
+    "claude-3-7-opus": "claude-opus-4-6-thinking",
+    "claude-3.7-opus": "claude-opus-4-6-thinking",
+    "claude-opus": "claude-opus-4-6-thinking",
+
+    # GPT-OSS 120B
+    "gpt-oss": "gpt-oss-120b-medium",
+    "gpt-oss-120b": "gpt-oss-120b-medium",
+    "gpt-oss-120b-medium": "gpt-oss-120b-medium",
 }
 
 
 VALID_CODE_ASSIST_MODELS = {
+    "gemini-3.8-pro-high",
+    "gemini-3.8-pro-low",
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3.8-flash-tiered",
     "gemini-3-flash-agent",
-    "gemini-3.6-flash-medium",
-    "gemini-3.1-pro-low",
+    "gemini-3-flash",
+    "gemini-2.5-flash",
     "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
 }
 
 
@@ -160,31 +200,45 @@ def map_model_name(requested_model: str) -> str:
     return mapped
 
 
-def build_antigravity_headers(access_token: str, project_id: str = "") -> Dict[str, str]:
+def build_antigravity_headers(
+    access_token: str,
+    project_id: str = "",
+    prompt_id: Optional[str] = None,
+    trajectory_id: Optional[str] = None,
+) -> Dict[str, str]:
     """Generate HTTP headers simulating Antigravity IDE using dynamic fingerprinting."""
     try:
-        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-        return AntigravityFingerprint.build_headers(access_token, project_id=project_id)
+        from .fingerprint import AntigravityFingerprint
+        return AntigravityFingerprint.build_headers(
+            access_token,
+            project_id=project_id,
+            prompt_id=prompt_id,
+            trajectory_id=trajectory_id,
+        )
     except ImportError:
         try:
-            from bridge.fingerprint import AntigravityFingerprint
-            return AntigravityFingerprint.build_headers(access_token, project_id=project_id)
+            from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+            return AntigravityFingerprint.build_headers(
+                access_token,
+                project_id=project_id,
+                prompt_id=prompt_id,
+                trajectory_id=trajectory_id,
+            )
         except Exception:
             pass
 
+    req_id = str(uuid.uuid4())
     return {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "Accept-Encoding": "gzip",
         "Authorization": f"Bearer {access_token}",
-        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
-        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
-        "Client-Metadata": json.dumps({
-            "ideType": "ANTIGRAVITY",
-            "platform": "PLATFORM_WINDOWS",
-            "pluginType": "GEMINI",
-            "applicationVersion": "2.11.0",
-        }, separators=(",", ":")),
-        "x-activity-request-id": str(uuid.uuid4()),
+        "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
+        "x-activity-request-id": req_id,
+        "X-Aicode-Request-Id": req_id,
+        "X-Aicode-Prompt-Id": prompt_id or str(uuid.uuid4()),
+        "X-Aicode-Trajectory-Id": trajectory_id or str(uuid.uuid4()),
     }
 
 
@@ -443,6 +497,8 @@ def build_code_assist_request(
     openai_payload: Dict[str, Any],
     project_id: str,
     model_discovery: Optional[ModelDiscoveryManager] = None,
+    prompt_id: Optional[str] = None,
+    trajectory_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert an OpenAI /v1/chat/completions payload to Code Assist envelope format."""
     messages = openai_payload.get("messages") or []
@@ -450,8 +506,13 @@ def build_code_assist_request(
     model_meta: Dict[str, Any] = {}
     if model_discovery is not None:
         model_name, model_meta = model_discovery.resolve_model(req_model)
+        # Ensure resolved model ID is mapped to a valid backend Code Assist ID
+        model_name = map_model_name(model_name)
     else:
         model_name = map_model_name(req_model)
+        if any(k in model_name for k in ("thinking", "3.8", "3-flash", "claude")):
+            default_budget = 16384 if ("pro" in model_name or "high" in model_name) else 8192
+            model_meta = {"supports_thinking": True, "thinking_budget": default_budget}
 
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
@@ -545,10 +606,23 @@ def build_code_assist_request(
     elif "max_completion_tokens" in openai_payload and openai_payload["max_completion_tokens"] is not None:
         generation_config["maxOutputTokens"] = int(openai_payload["max_completion_tokens"])
 
+    resolved_prompt_id = prompt_id or str(uuid.uuid4())
+    resolved_trajectory_id = trajectory_id
+    if not resolved_trajectory_id:
+        try:
+            try:
+                from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+            except ImportError:
+                from .fingerprint import AntigravityFingerprint
+            resolved_trajectory_id = AntigravityFingerprint.get_trajectory_id()
+        except Exception:
+            resolved_trajectory_id = str(uuid.uuid4())
+
     inner_request: Dict[str, Any] = {
         "contents": contents,
+        "sessionId": resolved_trajectory_id,
     }
-    # Auto-inject thinkingConfig if model supports thinking
+    # Auto-inject thinkingConfig if model supports thinking (matching language_server.exe)
     if model_meta.get("supports_thinking"):
         budget = model_meta.get("thinking_budget", 2048)
         user_budget = openai_payload.get("thinking_budget")
@@ -557,14 +631,16 @@ def build_code_assist_request(
                 budget = int(user_budget)
             except Exception:
                 pass
-        generation_config["thinkingConfig"] = {"thinkingBudget": budget}
+        generation_config["thinkingConfig"] = {
+            "includeThoughts": True,
+            "thinkingBudget": budget,
+        }
 
     if generation_config:
         inner_request["generationConfig"] = generation_config
 
     if joined_system:
         inner_request["systemInstruction"] = {
-            "role": "system",
             "parts": [{"text": joined_system}],
         }
 
@@ -576,10 +652,18 @@ def build_code_assist_request(
     if tool_config:
         inner_request["toolConfig"] = tool_config
 
+    effective_project = (project_id or DEFAULT_PROJECT_ID).strip()
+
+    ts_ms = int(time.time() * 1000)
+    cascade_id = str(uuid.uuid4())
+
     return {
-        "project": project_id or DEFAULT_PROJECT_ID,
+        "project": effective_project,
         "model": model_name,
-        "user_prompt_id": str(uuid.uuid4()),
+        "userAgent": "antigravity",
+        "requestType": "agent",
+        "requestId": f"agent/{resolved_trajectory_id}/{ts_ms}/{cascade_id}/1",
+        "userPromptId": resolved_prompt_id,
         "request": inner_request,
     }
 
@@ -799,13 +883,44 @@ class AntigravityClient:
             # Apply micro-spacing guard to avoid rapid concurrency bursts
             self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
 
-            envelope = build_code_assist_request(openai_payload, creds.project_id, self.model_discovery)
-            headers = build_antigravity_headers(creds.access_token, creds.project_id)
+            raw_eff = getattr(creds, "effective_project_id", None)
+            effective_project_id = (
+                raw_eff
+                if isinstance(raw_eff, str) and raw_eff.strip()
+                else (
+                    creds.project_id
+                    if isinstance(getattr(creds, "project_id", None), str) and creds.project_id.strip()
+                    else DEFAULT_PROJECT_ID
+                )
+            )
+            prompt_id = str(uuid.uuid4())
+            try:
+                try:
+                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                except ImportError:
+                    from .fingerprint import AntigravityFingerprint
+                trajectory_id = AntigravityFingerprint.get_trajectory_id()
+            except Exception:
+                trajectory_id = str(uuid.uuid4())
+
+            envelope = build_code_assist_request(
+                openai_payload,
+                effective_project_id,
+                self.model_discovery,
+                prompt_id=prompt_id,
+                trajectory_id=trajectory_id,
+            )
+            headers = build_antigravity_headers(
+                creds.access_token,
+                effective_project_id,
+                prompt_id=prompt_id,
+                trajectory_id=trajectory_id,
+            )
 
             url = f"{CODE_ASSIST_BASE_URL}:generateContent"
             try:
                 resp = await self._http.post(url, json=envelope, headers=headers)
-                if resp.status_code != 200:
+                if resp.status_code in {404, 500, 502, 503, 504}:
                     logger.warning("Primary Code Assist endpoint returned %s, trying fallback", resp.status_code)
                     fallback_url = f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent"
                     resp = await self._http.post(fallback_url, json=envelope, headers=headers)
@@ -827,21 +942,38 @@ class AntigravityClient:
                     requested_model = openai_payload.get("model") or "gemini-3.7-flash"
                     return translate_gemini_to_openai_response(gemini_data, requested_model)
 
+                error_body = resp.text or ""
+                error_lower = error_body.lower()
+                if resp.status_code == 403 and (
+                    "tos_violation" in error_lower
+                    or "account_disabled" in error_lower
+                    or "disabled in this account" in error_lower
+                ):
+                    if hasattr(self.account_pool, "mark_account_disabled"):
+                        self.account_pool.mark_account_disabled(
+                            current_email, reason=f"HTTP 403 TOS_VIOLATION: {error_body[:200]}"
+                        )
+                    else:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason="HTTP 403 TOS_VIOLATION", cooldown_seconds=86400.0
+                        )
+                elif resp.status_code in {429, 403, 503}:
+                    self.account_pool.mark_account_exhausted(
+                        current_email, reason=f"HTTP {resp.status_code}"
+                    )
+
                 is_failover_code = resp.status_code in {429, 403, 503}
                 if is_failover_code and attempt < max_attempts - 1:
                     logger.warning(
                         "Account '%s' encountered HTTP %d (%s). Auto-failing over to next account in pool...",
-                        current_email, resp.status_code, resp.text[:120]
+                        current_email, resp.status_code, error_body[:120]
                     )
-                    self.account_pool.mark_account_exhausted(
-                        current_email, reason=f"HTTP {resp.status_code}"
-                    )
-                    last_error = f"HTTP {resp.status_code}: {resp.text}"
+                    last_error = f"HTTP {resp.status_code}: {error_body}"
                     continue
                 else:
                     self.account_pool.record_account_usage(current_email, success=False)
                     raise RuntimeError(
-                        f"Antigravity Code Assist failed with HTTP {resp.status_code}: {resp.text}"
+                        f"Antigravity Code Assist failed with HTTP {resp.status_code}: {error_body}"
                     )
             except Exception as e:
                 last_error = e
@@ -897,8 +1029,39 @@ class AntigravityClient:
             # Apply micro-spacing guard
             self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
 
-            envelope = build_code_assist_request(openai_payload, creds.project_id, self.model_discovery)
-            headers = build_antigravity_headers(creds.access_token, creds.project_id)
+            raw_eff = getattr(creds, "effective_project_id", None)
+            effective_project_id = (
+                raw_eff
+                if isinstance(raw_eff, str) and raw_eff.strip()
+                else (
+                    creds.project_id
+                    if isinstance(getattr(creds, "project_id", None), str) and creds.project_id.strip()
+                    else DEFAULT_PROJECT_ID
+                )
+            )
+            prompt_id = str(uuid.uuid4())
+            try:
+                try:
+                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                except ImportError:
+                    from .fingerprint import AntigravityFingerprint
+                trajectory_id = AntigravityFingerprint.get_trajectory_id()
+            except Exception:
+                trajectory_id = str(uuid.uuid4())
+
+            envelope = build_code_assist_request(
+                openai_payload,
+                effective_project_id,
+                self.model_discovery,
+                prompt_id=prompt_id,
+                trajectory_id=trajectory_id,
+            )
+            headers = build_antigravity_headers(
+                creds.access_token,
+                effective_project_id,
+                prompt_id=prompt_id,
+                trajectory_id=trajectory_id,
+            )
             headers["Accept"] = "text/event-stream"
 
             url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
@@ -908,7 +1071,7 @@ class AntigravityClient:
                     self._http.build_request("POST", url, json=envelope, headers=headers),
                     stream=True,
                 )
-                if response.status_code != 200:
+                if response.status_code in {404, 500, 502, 503, 504}:
                     fallback_url = f"{FALLBACK_CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
                     await response.aclose()
                     response = await self._http.send(
@@ -964,21 +1127,37 @@ class AntigravityClient:
                 else:
                     body = await response.aread()
                     await response.aclose()
+                    body_text = body.decode("utf-8", "replace")
+                    body_lower = body_text.lower()
+                    if response.status_code == 403 and (
+                        "tos_violation" in body_lower
+                        or "account_disabled" in body_lower
+                        or "disabled in this account" in body_lower
+                    ):
+                        if hasattr(self.account_pool, "mark_account_disabled"):
+                            self.account_pool.mark_account_disabled(
+                                current_email, reason=f"HTTP 403 TOS_VIOLATION: {body_text[:200]}"
+                            )
+                        else:
+                            self.account_pool.mark_account_exhausted(
+                                current_email, reason="HTTP 403 TOS_VIOLATION", cooldown_seconds=86400.0
+                            )
+                    elif response.status_code in {429, 403, 503}:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=f"HTTP {response.status_code}"
+                        )
                     is_failover_code = response.status_code in {429, 403, 503}
                     if is_failover_code and attempt < max_attempts - 1:
                         logger.warning(
                             "Account '%s' encountered HTTP %d during streaming. Auto-failing over to next account...",
                             current_email, response.status_code
                         )
-                        self.account_pool.mark_account_exhausted(
-                            current_email, reason=f"HTTP {response.status_code}"
-                        )
-                        last_error = f"HTTP {response.status_code}: {body.decode('utf-8', 'replace')}"
+                        last_error = f"HTTP {response.status_code}: {body_text}"
                         continue
                     else:
                         self.account_pool.record_account_usage(current_email, success=False)
                         raise RuntimeError(
-                            f"Antigravity Code Assist streaming failed with HTTP {response.status_code}: {body.decode('utf-8', 'replace')}"
+                            f"Antigravity Code Assist streaming failed with HTTP {response.status_code}: {body_text}"
                         )
             except Exception as e:
                 last_error = e

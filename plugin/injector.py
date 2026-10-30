@@ -185,6 +185,14 @@ def _inject_antigravity_into_model_options(payload: Any) -> None:
     except Exception as e:
         logger.debug(f"Model discovery for dashboard injection failed: {e}")
 
+    featured_models = [
+        "gemini-3.7-flash-tiered",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6-thinking",
+        "gemini-3.6-flash-high",
+        "gpt-oss-120b-medium",
+    ]
+
     if not model_ids:
         model_ids = [
             "gemini-3.7-flash-tiered",
@@ -195,6 +203,10 @@ def _inject_antigravity_into_model_options(payload: Any) -> None:
             "gemini-3.1-pro-high",
             "gpt-oss-120b-medium",
         ]
+    else:
+        for fm in featured_models:
+            if fm not in model_ids:
+                model_ids.append(fm)
 
     current_provider = str(payload.get("provider") or "").lower()
     is_current = (current_provider == "antigravity")
@@ -210,14 +222,8 @@ def _inject_antigravity_into_model_options(payload: Any) -> None:
         "authenticated": is_authed,
         "auth_type": "oauth",
         "base_url": "http://127.0.0.1:8100/v1",
-        "description": "Gemini 3.7, Claude Sonnet 4.6, Claude Opus 4.6 & GPT-OSS via Google Antigravity OAuth",
-        "featured_models": [
-            "gemini-3.7-flash-tiered",
-            "claude-sonnet-4-6",
-            "claude-opus-4-6-thinking",
-            "gemini-3.6-flash-high",
-            "gpt-oss-120b-medium",
-        ],
+        "description": "Gemini 3.8/3.7, Claude Sonnet 4.6, Claude Opus 4.6 & GPT-OSS via Google Antigravity OAuth",
+        "featured_models": featured_models,
     }
 
     providers.insert(0, antigravity_row)

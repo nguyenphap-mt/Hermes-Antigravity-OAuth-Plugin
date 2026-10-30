@@ -91,6 +91,15 @@ class AntigravityAccount:
         self.total_requests = value
 
     @property
+    def effective_project_id(self) -> str:
+        """Return managed companion project ID first, falling back to project_id."""
+        if self.managed_project_id and self.managed_project_id != "aicode-consumers":
+            return self.managed_project_id
+        if self.project_id and self.project_id != "aicode-consumers":
+            return self.project_id
+        return self.managed_project_id or self.project_id or "aicode-consumers"
+
+    @property
     def is_expired(self) -> bool:
         """Check if access token has expired or is close to expiring (within 2 min)."""
         if not self.access_token:
@@ -202,21 +211,38 @@ class AntigravityAccountPoolManager:
             self._save_raw(data)
 
     def get_rotation_strategy(self) -> str:
-        """Get rotation strategy ('sharded', 'round_robin', or 'failover')."""
+        """Get rotation strategy ('sharded', 'round_robin', 'fill_first', 'least_used', or 'failover')."""
         with self._lock:
             data = self._load_raw()
             return data.get("rotation_strategy", "sharded")
 
     def set_rotation_strategy(self, strategy: str) -> bool:
-        """Set rotation strategy ('sharded', 'round_robin', or 'failover')."""
+        """Set rotation strategy ('sharded', 'round_robin', 'fill_first', 'least_used', or 'failover')."""
         st = strategy.strip().lower()
-        if st not in {"sharded", "round_robin", "failover"}:
+        if st not in {"sharded", "round_robin", "fill_first", "least_used", "failover"}:
             return False
         with self._lock:
             data = self._load_raw()
             data["rotation_strategy"] = st
             self._save_raw(data)
             return True
+
+    def _save_pool(self) -> None:
+        """Compatibility helper for external callers expecting _save_pool()."""
+        with self._lock:
+            data = self._load_raw()
+            if data:
+                self._save_raw(data)
+
+    def get_account(self, email: str) -> Optional[AntigravityAccount]:
+        """Get a specific account by email (case-insensitive), or None if not found."""
+        target = (email or "").strip().lower()
+        if not target:
+            return None
+        for acc in self.list_accounts():
+            if acc.email == target:
+                return acc
+        return None
 
     def set_account_role(self, email: str, role: str) -> bool:
         """Assign service role to account ('all', 'llm', 'image_gen')."""
@@ -255,12 +281,15 @@ class AntigravityAccountPoolManager:
         else:
             return 900.0
 
-    def enforce_micro_spacing(self, email: str, min_interval: float = 1.2) -> float:
-        """Enforce minimal inter-request delay to prevent Google per-second Concurrency Burst 429s.
+    def enforce_micro_spacing(self, email: str, min_interval: float = 1.8) -> float:
+        """Enforce minimal inter-request delay with natural jitter to prevent burst 429s.
         Returns the delay slept in seconds.
         """
+        import random
         target = email.strip().lower()
         delay = 0.0
+        jitter = 0.0 if os.environ.get("PYTEST_CURRENT_TEST") else random.uniform(0.15, 0.55)
+        effective_interval = min_interval + jitter
         with self._lock:
             now = time.time()
             last = self._last_request_times.get(target, 0.0)
@@ -271,8 +300,8 @@ class AntigravityAccountPoolManager:
                     last = float(raw_accs[target].get("last_request_time", 0.0) or 0.0)
 
             elapsed = now - last
-            if 0.0 < elapsed < min_interval:
-                delay = min_interval - elapsed
+            if 0.0 < elapsed < effective_interval:
+                delay = effective_interval - elapsed
 
             new_timestamp = now + delay
             self._last_request_times[target] = new_timestamp
@@ -321,7 +350,7 @@ class AntigravityAccountPoolManager:
                 if not isinstance(acct_dict, dict):
                     continue
                 acc = AntigravityAccount.from_dict(acct_dict)
-                # Auto-recover if cooldown has expired
+                # Auto-recover if cooldown has expired (never auto-recover 'disabled')
                 if acc.status in {"exhausted", "cooling_down"} and acc.exhausted_until:
                     if now >= acc.exhausted_until:
                         acc.status = "active"
@@ -338,7 +367,7 @@ class AntigravityAccountPoolManager:
             return result
 
     def get_active_account(self) -> Optional[AntigravityAccount]:
-        """Get the currently designated active account."""
+        """Get the currently designated active account, auto-promoting a healthy account if the active one is disabled."""
         accounts = self.list_accounts()
         if not accounts:
             return None
@@ -347,12 +376,22 @@ class AntigravityAccountPoolManager:
             data = self._load_raw()
             active_email = (data.get("active_account_email") or "").strip().lower()
 
+        active_acc: Optional[AntigravityAccount] = None
         if active_email:
             for acc in accounts:
                 if acc.email == active_email:
-                    return acc
+                    active_acc = acc
+                    break
 
-        return accounts[0]
+        if active_acc and active_acc.status != "disabled":
+            return active_acc
+
+        for acc in accounts:
+            if acc.is_available:
+                self.set_active_account(acc.email)
+                return acc
+
+        return active_acc or accounts[0]
 
     def set_active_account(self, email: str) -> bool:
         """Manually designate an account as active and sync root keys."""
@@ -381,12 +420,7 @@ class AntigravityAccountPoolManager:
         exclude_emails: Optional[Set[str]] = None,
     ) -> Optional[AntigravityAccount]:
         """Select optimal account tailored for service type with Task-Based Sharding.
-        - When pool has >= 2 ready accounts:
-          * 'llm' defaults to Primary Account (or assigned_role='llm').
-          * 'image_gen' defaults to Secondary Account (or assigned_role='image_gen').
-          * Zero concurrency collision!
-        - When pool has 1 ready account: returns that account.
-        - Falls back gracefully if designated role account is cooling down.
+        Strictly enforces cooldown and disabled states — returns None if no account is available.
         """
         exclude = {e.lower().strip() for e in (exclude_emails or set())}
         accounts = [a for a in self.list_accounts() if a.email not in exclude]
@@ -397,11 +431,7 @@ class AntigravityAccountPoolManager:
 
         ready_accounts = [a for a in accounts if a.is_available]
         if not ready_accounts:
-            # Fallback to account whose cooldown ends soonest
-            accounts_with_timer = [a for a in accounts if a.exhausted_until]
-            if accounts_with_timer:
-                return min(accounts_with_timer, key=lambda a: a.exhausted_until or 0)
-            return accounts[0]
+            return None
 
         if strategy == "sharded":
             if len(ready_accounts) >= 2:
@@ -431,7 +461,13 @@ class AntigravityAccountPoolManager:
             self.set_active_account(chosen.email)
             return chosen
 
-        else:  # 'failover'
+        elif strategy == "least_used":
+            ready_accounts.sort(key=lambda a: (a.total_requests, a.last_used or 0.0))
+            chosen = ready_accounts[0]
+            self.set_active_account(chosen.email)
+            return chosen
+
+        else:  # 'fill_first' or 'failover'
             active = self.get_active_account()
             if active and active.is_available and active.email not in exclude:
                 return active
@@ -446,6 +482,35 @@ class AntigravityAccountPoolManager:
         """Select the next available account based on active strategy and availability."""
         return self.get_account_for_service("all", exclude_emails=exclude_emails)
 
+    def mark_account_disabled(
+        self,
+        email: str,
+        reason: str = "TOS_VIOLATION",
+    ) -> Optional[AntigravityAccount]:
+        """Permanently disable an account in the pool (e.g. on HTTP 403 TOS_VIOLATION) and fail over."""
+        target = email.strip().lower()
+        with self._lock:
+            data = self._load_raw()
+            raw_accs = data.get("accounts", {})
+            if isinstance(raw_accs, dict) and target in raw_accs:
+                raw_accs[target]["status"] = "disabled"
+                raw_accs[target]["exhausted_until"] = None
+                raw_accs[target]["failure_count"] = int(raw_accs[target].get("failure_count", 0)) + 1
+                raw_accs[target]["disabled_reason"] = reason
+                data["accounts"] = raw_accs
+                self._save_raw(data)
+                logger.error(
+                    "Antigravity account '%s' has been permanently marked DISABLED in pool. Reason: %s",
+                    target, reason,
+                )
+
+        next_acc = self.get_next_available_account(exclude_emails={target})
+        if next_acc:
+            self.set_active_account(next_acc.email)
+            logger.info("Auto-failover after disable: switched active account to '%s'", next_acc.email)
+            return next_acc
+        return None
+
     def mark_account_exhausted(
         self,
         email: str,
@@ -454,6 +519,9 @@ class AntigravityAccountPoolManager:
     ) -> Optional[AntigravityAccount]:
         """Mark an account exhausted/cooling_down with tiered cooldown and auto-failover."""
         target = email.strip().lower()
+        if "tos_violation" in reason.lower() or "disabled in this account" in reason.lower():
+            return self.mark_account_disabled(target, reason=reason)
+
         if cooldown_seconds is None:
             cooldown_seconds = self.calculate_tiered_cooldown(target)
 
@@ -464,6 +532,8 @@ class AntigravityAccountPoolManager:
             data = self._load_raw()
             raw_accs = data.get("accounts", {})
             if isinstance(raw_accs, dict) and target in raw_accs:
+                if raw_accs[target].get("status") == "disabled":
+                    return self.get_next_available_account(exclude_emails={target})
                 raw_accs[target]["status"] = "cooling_down"
                 raw_accs[target]["exhausted_until"] = cooldown_until
                 raw_accs[target]["failure_count"] = int(raw_accs[target].get("failure_count", 0)) + 1
@@ -508,8 +578,8 @@ class AntigravityAccountPoolManager:
                 data["accounts"] = raw_accs
                 self._save_raw(data)
 
-    def add_or_update_account(self, creds: Any) -> AntigravityAccount:
-        """Register or update an account from AntigravityCredentials or dict."""
+    def add_or_update_account(self, creds: Any, reset_status: bool = False) -> AntigravityAccount:
+        """Register or update an account from AntigravityCredentials or dict, preserving cooldown/disabled state."""
         if hasattr(creds, "email"):
             em = (creds.email or "primary").strip().lower()
             acc = AntigravityAccount(
@@ -534,7 +604,7 @@ class AntigravityAccountPoolManager:
             if not isinstance(raw_accs, dict):
                 raw_accs = {}
 
-            # Preserve tokens and counters if account already existed
+            # Preserve tokens, counters, and cooldown/disabled state if account already existed
             if acc.email in raw_accs:
                 old = raw_accs[acc.email]
                 if not acc.access_token and old.get("access_token"):
@@ -543,11 +613,26 @@ class AntigravityAccountPoolManager:
                     acc.refresh_token = old["refresh_token"]
                 if acc.expires_at <= 0 and old.get("expires_at"):
                     acc.expires_at = float(old["expires_at"])
+                if not acc.managed_project_id and old.get("managed_project_id"):
+                    acc.managed_project_id = old["managed_project_id"]
+                if not acc.tier_id and old.get("tier_id"):
+                    acc.tier_id = old["tier_id"]
                 if not acc.project_id or acc.project_id == "aicode-consumers":
-                    if old.get("project_id"):
+                    if acc.managed_project_id and acc.managed_project_id != "aicode-consumers":
+                        acc.project_id = acc.managed_project_id
+                    elif old.get("project_id"):
                         acc.project_id = old["project_id"]
-                acc.total_requests = old.get("total_requests", 0)
+                acc.total_requests = int(old.get("total_requests", 0))
                 acc.last_used = old.get("last_used")
+                acc.last_request_time = float(old.get("last_request_time", 0.0) or 0.0)
+                acc.assigned_role = str(old.get("assigned_role", acc.assigned_role or "all"))
+                if not reset_status:
+                    old_status = str(old.get("status", "active"))
+                    if old_status in {"cooling_down", "exhausted", "disabled"}:
+                        acc.status = old_status
+                        acc.exhausted_until = float(old["exhausted_until"]) if old.get("exhausted_until") else None
+                        acc.consecutive_429_count = int(old.get("consecutive_429_count", 0))
+                        acc.failure_count = int(old.get("failure_count", 0))
 
             raw_accs[acc.email] = acc.to_dict()
             data["accounts"] = raw_accs
@@ -563,7 +648,7 @@ class AntigravityAccountPoolManager:
                         data[k] = v
 
             self._save_raw(data)
-            logger.info("Saved account '%s' to Antigravity account pool.", acc.email)
+            logger.info("Saved account '%s' to Antigravity account pool (status=%s).", acc.email, acc.status)
             return acc
 
     def remove_account(self, email: str) -> bool:

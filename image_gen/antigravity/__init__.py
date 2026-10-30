@@ -50,6 +50,57 @@ _ASPECT_RATIO_DESCRIPTIONS = {
 }
 
 
+_ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _is_safe_local_image_path(path_str: str) -> bool:
+    """Verify local path has an allowed image extension and is not inside sensitive auth/credential stores."""
+    try:
+        p = Path(path_str).resolve()
+        if p.suffix.lower() not in _ALLOWED_IMAGE_EXTENSIONS:
+            return False
+        parts_lower = {part.lower() for part in p.parts}
+        if parts_lower & {".ssh", ".aws", ".gnupg"}:
+            return False
+        if "auth" in parts_lower and (".hermes" in parts_lower or "hermes" in parts_lower):
+            return False
+        name_lower = p.name.lower()
+        if any(tok in name_lower for tok in ("antigravity_tokens", "flow_token", "auth.json", ".env")):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _is_safe_remote_url(url: str) -> bool:
+    """Prevent SSRF by blocking loopback, link-local metadata, and private network IPs."""
+    try:
+        import ipaddress
+        import socket
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        host = parsed.hostname.strip().lower()
+        if host in {"localhost", "0.0.0.0", "metadata.google.internal"}:
+            return False
+        try:
+            ip_obj = ipaddress.ip_address(host)
+            if ip_obj.is_loopback or ip_obj.is_private or ip_obj.is_link_local or ip_obj.is_reserved:
+                return False
+        except ValueError:
+            pass
+        for info in socket.getaddrinfo(host, None):
+            ip_str = info[4][0]
+            ip_obj = ipaddress.ip_address(ip_str)
+            if ip_obj.is_loopback or ip_obj.is_private or ip_obj.is_link_local or ip_obj.is_reserved:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def _load_image_as_b64(path_or_url: str) -> Optional[tuple[str, str]]:
     """Load local file or remote URL into (mime_type, base64_str)."""
     if not path_or_url or not isinstance(path_or_url, str):
@@ -58,21 +109,32 @@ def _load_image_as_b64(path_or_url: str) -> Optional[tuple[str, str]]:
     mime_type = "image/jpeg"
 
     if os.path.exists(path_or_url):
+        if not _is_safe_local_image_path(path_or_url):
+            logger.warning("Blocked reading non-image or sensitive local path: %s", path_or_url)
+            return None
         try:
+            if os.path.getsize(path_or_url) > _MAX_IMAGE_BYTES:
+                logger.warning("Local image exceeds 20MB limit: %s", path_or_url)
+                return None
             with open(path_or_url, "rb") as f:
-                raw_bytes = f.read()
+                raw_bytes = f.read(_MAX_IMAGE_BYTES)
             ext = Path(path_or_url).suffix.lower()
             if ext in (".png",):
                 mime_type = "image/png"
             elif ext in (".webp",):
                 mime_type = "image/webp"
+            elif ext in (".gif",):
+                mime_type = "image/gif"
         except Exception as ex:
             logger.debug("Failed to read local image %s: %s", path_or_url, ex)
     elif path_or_url.startswith(("http://", "https://")):
+        if not _is_safe_remote_url(path_or_url):
+            logger.warning("Blocked unsafe remote image URL (SSRF guard): %s", path_or_url)
+            return None
         try:
             req = urllib.request.Request(path_or_url, headers={"User-Agent": "Antigravity/1.0.0"})
             with urllib.request.urlopen(req, timeout=30.0) as resp:
-                raw_bytes = resp.read()
+                raw_bytes = resp.read(_MAX_IMAGE_BYTES)
                 content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip()
                 if content_type:
                     mime_type = content_type
@@ -232,12 +294,28 @@ class AntigravityImageGenProvider(ImageGenProvider):
         successful_email: Optional[str] = None
         is_single_account = len(candidate_creds) <= 1
 
+        def _decode_resp(r: Any) -> Dict[str, Any]:
+            raw_b = r.read()
+            if isinstance(raw_b, bytes):
+                if raw_b[:2] == b"\x1f\x8b":
+                    import gzip
+                    raw_b = gzip.decompress(raw_b)
+                return json.loads(raw_b.decode("utf-8"))
+            return json.loads(str(raw_b))
+
         for creds in candidate_creds:
-            email = getattr(creds, "email", "primary")
-            candidate_projects = [DEFAULT_PROJECT_ID]
-            configured_proj = getattr(creds, "project_id", "")
-            if configured_proj and configured_proj != DEFAULT_PROJECT_ID:
-                candidate_projects.append(configured_proj)
+            raw_email = getattr(creds, "email", "primary")
+            email = raw_email if isinstance(raw_email, str) and raw_email else "primary"
+            candidate_projects: List[str] = []
+            raw_eff = getattr(creds, "effective_project_id", None)
+            raw_proj = getattr(creds, "project_id", None)
+            eff_proj = raw_eff if isinstance(raw_eff, str) and raw_eff else (raw_proj if isinstance(raw_proj, str) else "")
+            if eff_proj and eff_proj != DEFAULT_PROJECT_ID:
+                candidate_projects.append(eff_proj)
+            if DEFAULT_PROJECT_ID not in candidate_projects:
+                candidate_projects.append(DEFAULT_PROJECT_ID)
+            if "" not in candidate_projects:
+                candidate_projects.append("")
 
             account_failed_with_429 = False
 
@@ -249,13 +327,31 @@ class AntigravityImageGenProvider(ImageGenProvider):
                 if account_failed_with_429:
                     break
 
+                prompt_id = str(uuid.uuid4())
+                try:
+                    try:
+                        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                    except ImportError:
+                        from bridge.fingerprint import AntigravityFingerprint
+                    trajectory_id = AntigravityFingerprint.get_trajectory_id()
+                except Exception:
+                    trajectory_id = str(uuid.uuid4())
+
+                ts_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+                cascade_id = str(uuid.uuid4())
+
                 payload = {
                     "project": proj,
                     "model": api_model,
+                    "userAgent": "antigravity",
+                    "requestType": "agent",
+                    "requestId": f"agent/{trajectory_id}/{ts_ms}/{cascade_id}/1",
+                    "userPromptId": prompt_id,
                     "request": {
                         "contents": [
                             {"role": "user", "parts": parts}
                         ],
+                        "sessionId": trajectory_id,
                         "generationConfig": {
                             "candidateCount": 1,
                         }
@@ -264,22 +360,33 @@ class AntigravityImageGenProvider(ImageGenProvider):
                 payload_bytes = json.dumps(payload).encode("utf-8")
                 try:
                     from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                    headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=proj)
+                    headers = AntigravityFingerprint.build_headers(
+                        creds.access_token,
+                        project_id=proj,
+                        prompt_id=prompt_id,
+                        trajectory_id=trajectory_id,
+                    )
                 except ImportError:
                     try:
                         from bridge.fingerprint import AntigravityFingerprint
-                        headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=proj)
+                        headers = AntigravityFingerprint.build_headers(
+                            creds.access_token,
+                            project_id=proj,
+                            prompt_id=prompt_id,
+                            trajectory_id=trajectory_id,
+                        )
                     except Exception:
                         headers = {
                             "Content-Type": "application/json",
+                            "Accept-Encoding": "gzip",
                             "Authorization": f"Bearer {creds.access_token}",
-                            "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
-                            "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
+                            "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+                            "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
                             "Client-Metadata": json.dumps({
                                 "ideType": "ANTIGRAVITY",
                                 "platform": "PLATFORM_WINDOWS",
                                 "pluginType": "GEMINI",
-                                "applicationVersion": "2.11.0",
+                                "applicationVersion": "2.23.1",
                             }, separators=(",", ":")),
                         }
 
@@ -288,7 +395,7 @@ class AntigravityImageGenProvider(ImageGenProvider):
                     try:
                         req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
                         with urllib.request.urlopen(req, timeout=30.0) as resp:
-                            raw_response = json.loads(resp.read().decode("utf-8"))
+                            raw_response = _decode_resp(resp)
                             if raw_response:
                                 successful_email = email
                                 if pool:
@@ -302,17 +409,18 @@ class AntigravityImageGenProvider(ImageGenProvider):
                             if is_single_account:
                                 # Single account RandExpBackoff retry loop (mimics Antigravity IDE)
                                 import random
+                                import time as _time
                                 for backoff_attempt in range(3):
                                     delay = 1.5 * (2 ** backoff_attempt) + random.uniform(0.2, 0.6)
                                     logger.info(
                                         "Single-account rate limit: RandExpBackoff waiting %.2fs before retry %d/3...",
                                         delay, backoff_attempt + 1
                                     )
-                                    time.sleep(delay)
+                                    _time.sleep(delay)
                                     try:
                                         retry_req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
                                         with urllib.request.urlopen(retry_req, timeout=30.0) as retry_resp:
-                                            raw_response = json.loads(retry_resp.read().decode("utf-8"))
+                                            raw_response = _decode_resp(retry_resp)
                                             if raw_response:
                                                 successful_email = email
                                                 if pool:
@@ -343,39 +451,57 @@ class AntigravityImageGenProvider(ImageGenProvider):
         # Transient burst retry if all accounts hit 429 and response still empty
         if not raw_response and last_error and "429" in str(last_error) and candidate_creds:
             import random
+            import time as _time
             logger.info("All accounts in cooldown or hit 429. RandExpBackoff sleep 2.5s before final attempt...")
-            time.sleep(2.5 + random.uniform(0.2, 0.5))
+            _time.sleep(2.5 + random.uniform(0.2, 0.5))
             for creds in reversed(candidate_creds):
                 email = getattr(creds, "email", "primary")
+                eff_proj = getattr(creds, "effective_project_id", "") or getattr(creds, "project_id", "")
+                proj_val = eff_proj or DEFAULT_PROJECT_ID
+                prompt_id = str(uuid.uuid4())
+                trajectory_id = str(uuid.uuid4())
+                ts_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+                cascade_id = str(uuid.uuid4())
                 payload = {
-                    "project": DEFAULT_PROJECT_ID,
+                    "project": proj_val,
                     "model": api_model,
+                    "userAgent": "antigravity",
+                    "requestType": "agent",
+                    "requestId": f"agent/{trajectory_id}/{ts_ms}/{cascade_id}/1",
+                    "userPromptId": prompt_id,
                     "request": {
                         "contents": [{"role": "user", "parts": parts}],
+                        "sessionId": trajectory_id,
                         "generationConfig": {"candidateCount": 1}
                     }
                 }
                 payload_bytes = json.dumps(payload).encode("utf-8")
                 try:
                     from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                    headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=DEFAULT_PROJECT_ID)
+                    headers = AntigravityFingerprint.build_headers(
+                        creds.access_token,
+                        project_id=proj_val,
+                        prompt_id=prompt_id,
+                        trajectory_id=trajectory_id,
+                    )
                 except Exception:
                     headers = {
                         "Content-Type": "application/json",
+                        "Accept-Encoding": "gzip",
                         "Authorization": f"Bearer {creds.access_token}",
-                        "User-Agent": "Antigravity/2.11.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.03.0",
-                        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.11.0 antigravity/2.11.0",
+                        "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+                        "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
                         "Client-Metadata": json.dumps({
                             "ideType": "ANTIGRAVITY",
                             "platform": "PLATFORM_WINDOWS",
                             "pluginType": "GEMINI",
-                            "applicationVersion": "2.11.0",
+                            "applicationVersion": "2.23.1",
                         }, separators=(",", ":")),
                     }
                 try:
                     req = urllib.request.Request(CODE_ASSIST_URL, data=payload_bytes, headers=headers, method="POST")
                     with urllib.request.urlopen(req, timeout=30.0) as resp:
-                        raw_response = json.loads(resp.read().decode("utf-8"))
+                        raw_response = _decode_resp(resp)
                         if raw_response:
                             successful_email = email
                             if pool:

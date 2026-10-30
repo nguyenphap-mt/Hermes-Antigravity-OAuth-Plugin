@@ -249,7 +249,11 @@ def main():
 
         if ws_tools.exists():
             shutil.rmtree(ws_tools, ignore_errors=True)
-        shutil.copytree(bridge_src, ws_tools)
+        shutil.copytree(bridge_src, ws_tools, dirs_exist_ok=True)
+
+        ws_bridge = ws / "bridge"
+        if ws_bridge.exists():
+            shutil.copytree(bridge_src, ws_bridge, dirs_exist_ok=True)
 
         if dashboard_src.exists():
             ws_dash.mkdir(parents=True, exist_ok=True)

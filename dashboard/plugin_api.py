@@ -241,11 +241,11 @@ def _get_refresh_daemon():
 
 def _get_ag_auth_manager():
     try:
-        from bridge.auth import AntigravityAuthManager
+        from tools.antigravity_bridge.auth import AntigravityAuthManager
         return AntigravityAuthManager()
     except ImportError:
         try:
-            from tools.antigravity_bridge.auth import AntigravityAuthManager
+            from bridge.auth import AntigravityAuthManager
             return AntigravityAuthManager()
         except ImportError:
             raise HTTPException(status_code=500, detail="AntigravityAuthManager could not be imported.")
@@ -253,11 +253,11 @@ def _get_ag_auth_manager():
 
 def _get_ag_account_pool():
     try:
-        from bridge.account_pool import AntigravityAccountPoolManager
+        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
         return AntigravityAccountPoolManager()
     except ImportError:
         try:
-            from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+            from bridge.account_pool import AntigravityAccountPoolManager
             return AntigravityAccountPoolManager()
         except ImportError:
             raise HTTPException(status_code=500, detail="AntigravityAccountPoolManager could not be imported.")
@@ -265,11 +265,11 @@ def _get_ag_account_pool():
 
 def _get_server_module():
     try:
-        import bridge.server as srv
+        import tools.antigravity_bridge.server as srv
         return srv
     except ImportError:
         try:
-            import tools.antigravity_bridge.server as srv
+            import bridge.server as srv
             return srv
         except ImportError:
             raise HTTPException(status_code=500, detail="Bridge server module could not be imported.")
@@ -345,7 +345,7 @@ async def control_daemon(req: DaemonControlRequest):
             "-u",
             "-c",
             f"import sys; sys.path.insert(0, r'{_PLUGIN_ROOT}'); sys.path.insert(0, r'{_REPO_ROOT}'); "
-            f"from bridge.server import run_server; run_server(host='{host}', port={port})",
+            f"from tools.antigravity_bridge.server import run_server; run_server(host='{host}', port={port})",
         ]
         flags = 0
         if sys.platform == "win32":
@@ -420,6 +420,16 @@ async def get_accounts():
             usage_count=usage_count,
         ))
 
+    items.sort(
+        key=lambda item: (
+            0 if (item.is_active and item.status != "disabled")
+            else 1 if (item.is_available and item.status != "disabled")
+            else 2 if item.status != "disabled"
+            else 3,
+            item.email,
+        )
+    )
+
     mode = "Multi-Account Sharded Pool" if len(accounts) >= 2 else "Single-Account Resilience Mode"
     return AccountPoolResponse(
         ok=True,
@@ -475,32 +485,121 @@ async def set_account_role(req: AccountRoleRequest):
     allowed = {"all", "llm", "image_gen"}
     if role not in allowed:
         raise HTTPException(status_code=400, detail=f"Role must be one of: {allowed}")
-    acc = pool.get_account(email)
-    if not acc:
+    if not pool.set_account_role(email, role):
         raise HTTPException(status_code=404, detail=f"Account '{email}' not found.")
-    acc.role = role
-    pool._save_pool()
     return {"ok": True, "message": f"Đã gán vai trò '{role}' cho tài khoản {email}"}
+
+
+@router.post("/accounts/check-unlock")
+async def check_account_unlock(req: AccountActionRequest):
+    """Live-probe Google Code Assist to check if a disabled account (or 'all' disabled accounts) has been unlocked."""
+    auth_mgr = _get_ag_auth_manager()
+    pool = _get_ag_account_pool()
+    target = (req.email or "").strip().lower()
+    loop = asyncio.get_event_loop()
+
+    if target == "all":
+        candidates = [a.email for a in pool.list_accounts() if a.status in {"disabled", "cooling_down", "exhausted"}]
+        if not candidates:
+            return {
+                "ok": True,
+                "unlocked_count": 0,
+                "results": [],
+                "message": "Tất cả tài khoản đều đang ở trạng thái SẴN SÀNG (không có tài khoản nào bị khóa).",
+            }
+        results = []
+        unlocked_emails = []
+        for em in candidates:
+            res = await loop.run_in_executor(None, auth_mgr.probe_account_unlock_status, em)
+            results.append(res)
+            if res.get("unlocked"):
+                unlocked_emails.append(em)
+        if unlocked_emails:
+            msg = f"Đã mở khóa & khôi phục {len(unlocked_emails)}/{len(candidates)} tài khoản: {', '.join(unlocked_emails)}!"
+        else:
+            msg = f"Đã kiểm tra {len(candidates)} tài khoản bị khóa: Google vẫn chưa mở khóa (403 TOS_VIOLATION)."
+        return {
+            "ok": True,
+            "unlocked_count": len(unlocked_emails),
+            "unlocked_emails": unlocked_emails,
+            "results": results,
+            "message": msg,
+        }
+
+    res = await loop.run_in_executor(None, auth_mgr.probe_account_unlock_status, target)
+    return res
+
+
+_PKCE_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+
+class AccountLoginSubmitRequest(BaseModel):
+    session_id: str
+    callback_url: str
 
 
 @router.post("/accounts/login-start")
 async def start_oauth_login():
-    """Launch Google OAuth PKCE interactive login flow in background."""
+    """Create a Google OAuth PKCE session and return auth_url immediately for mobile/remote or local browser."""
+    auth_mgr = _get_ag_auth_manager()
+    try:
+        # Clean up expired sessions
+        now = time.time()
+        expired = [sid for sid, s in _PKCE_SESSIONS.items() if s.get("expires_at", 0) < now]
+        for sid in expired:
+            _PKCE_SESSIONS.pop(sid, None)
+
+        session = auth_mgr.create_pkce_auth_session()
+        _PKCE_SESSIONS[session["session_id"]] = session
+        return {
+            "ok": True,
+            "session_id": session["session_id"],
+            "auth_url": session["auth_url"],
+            "redirect_uri": session["redirect_uri"],
+            "message": "Đã tạo liên kết đăng nhập Google OAuth PKCE.",
+        }
+    except Exception as e:
+        logger.error(f"OAuth login-start failed: {e}")
+        return {"ok": False, "error": str(e), "message": f"Không thể khởi tạo OAuth: {e}"}
+
+
+@router.post("/accounts/login-submit")
+async def submit_oauth_login(req: AccountLoginSubmitRequest):
+    """Complete Google OAuth PKCE login using the callback URL or code pasted from mobile/browser."""
+    session = _PKCE_SESSIONS.get(req.session_id)
+    if not session:
+        return {
+            "ok": False,
+            "message": "Phiên đăng nhập đã hết hạn hoặc không tồn tại. Vui lòng bấm '+ Đăng nhập Tài Khoản' lại.",
+        }
+
     auth_mgr = _get_ag_auth_manager()
     loop = asyncio.get_event_loop()
 
-    def _login_worker():
-        return auth_mgr.login_interactive(open_browser=True)
+    def _exchange_worker():
+        return auth_mgr.complete_pkce_auth_session(
+            callback_or_code=req.callback_url,
+            code_verifier=session["code_verifier"],
+            redirect_uri=session["redirect_uri"],
+            expected_state=session.get("state"),
+        )
 
     try:
-        creds = await loop.run_in_executor(None, _login_worker)
+        creds = await loop.run_in_executor(None, _exchange_worker)
+        _PKCE_SESSIONS.pop(req.session_id, None)
         pool = _get_ag_account_pool()
-        pool.add_or_update_account(creds)
-        pool.set_active_account(creds.email)
-        return {"ok": True, "email": creds.email, "message": "Đăng nhập Google OAuth thành công!"}
+        acc = pool.add_or_update_account(creds, reset_status=True)
+        pool.set_active_account(acc.email)
+        return {
+            "ok": True,
+            "email": acc.email,
+            "project_id": creds.project_id,
+            "message": f"Đăng nhập Google OAuth thành công: {acc.email}",
+        }
     except Exception as e:
-        logger.error(f"OAuth login failed: {e}")
-        return {"ok": False, "error": str(e), "message": f"Đăng nhập thất bại: {e}"}
+        logger.error(f"OAuth login-submit failed: {e}")
+        return {"ok": False, "error": str(e), "message": f"Xác thực OAuth thất bại: {e}"}
+
 
 
 # ─── Live Models Discovery & Quota Summary ───────────────────────────────────
@@ -510,9 +609,9 @@ async def get_antigravity_models(refresh: bool = False):
     """List models dynamically discovered from Antigravity IDE / Code Assist."""
     try:
         try:
-            from bridge.models import ModelDiscoveryManager
-        except ImportError:
             from tools.antigravity_bridge.models import ModelDiscoveryManager
+        except ImportError:
+            from bridge.models import ModelDiscoveryManager
         mgr = ModelDiscoveryManager()
         models = mgr.get_discovered_models(force_refresh=refresh)
         res = []
@@ -537,9 +636,9 @@ async def get_antigravity_quota(refresh: bool = False):
     """Fetch live quota buckets and rate limit summary from Code Assist API."""
     try:
         try:
-            from bridge.models import ModelDiscoveryManager
-        except ImportError:
             from tools.antigravity_bridge.models import ModelDiscoveryManager
+        except ImportError:
+            from bridge.models import ModelDiscoveryManager
         mgr = ModelDiscoveryManager()
         summary = mgr.fetch_quota_summary(force_refresh=refresh)
         return {"ok": True, "summary": summary}
@@ -945,9 +1044,9 @@ async def run_doctor_checks():
     # 5. Dynamic Models Discovery Check
     try:
         try:
-            from bridge.models import ModelDiscoveryManager
-        except ImportError:
             from tools.antigravity_bridge.models import ModelDiscoveryManager
+        except ImportError:
+            from bridge.models import ModelDiscoveryManager
         dmgr = ModelDiscoveryManager()
         models = dmgr.get_discovered_models(force_refresh=False)
         checks.append(DoctorCheckItem(
@@ -1002,7 +1101,12 @@ async def get_recent_logs(lines: int = Query(default=100, ge=10, le=500)):
         return {"ok": True, "lines": [], "log_file": str(log_file), "count": 0}
 
     try:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
+        max_bytes = 64 * 1024
+        with open(log_file, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes), os.SEEK_SET)
+            content = f.read().decode("utf-8", errors="replace")
         all_lines = content.splitlines()
         tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
         return {
