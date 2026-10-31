@@ -80,15 +80,28 @@ class AntigravityAccount:
     @property
     def computed_plan_type(self) -> str:
         """Normalized plan tier: 'ultra' | 'pro' | 'free'."""
-        if self.plan_type in {"ultra", "pro", "free"}:
-            return self.plan_type
         name = (self.plan_name or "").lower()
         tier = (self.tier_id or "").lower()
         if "ultra" in name or "ultra" in tier:
             return "ultra"
         if "pro" in name or "pro" in tier:
             return "pro"
+        if self.plan_type in {"ultra", "pro"}:
+            return self.plan_type
         return "free"
+
+    @property
+    def display_plan_name(self) -> str:
+        """User-friendly plan display name."""
+        pt = self.computed_plan_type
+        raw = (self.plan_name or "").strip()
+        if raw and raw.lower() not in {"free", "free tier", "antigravity starter quota"}:
+            return raw
+        if pt == "ultra":
+            return "Google AI Ultra"
+        if pt == "pro":
+            return "Google AI Pro"
+        return "Free Tier"
 
     @property
     def role(self) -> str:
@@ -143,6 +156,25 @@ class AntigravityAccount:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AntigravityAccount:
         email = str(data.get("email", "")).strip().lower()
+        tier_id = str(data.get("tier_id", "") or "")
+        raw_plan_name = str(data.get("plan_name", "") or "")
+        raw_plan_type = str(data.get("plan_type", "") or "")
+
+        p_low = raw_plan_name.lower()
+        t_low = tier_id.lower()
+        if "ultra" in p_low or "ultra" in t_low:
+            plan_type = "ultra"
+            plan_name = raw_plan_name or "Google AI Ultra"
+        elif "pro" in p_low or "pro" in t_low:
+            plan_type = "pro"
+            plan_name = raw_plan_name or "Google AI Pro"
+        elif raw_plan_type in {"ultra", "pro"}:
+            plan_type = raw_plan_type
+            plan_name = raw_plan_name or ("Google AI Ultra" if plan_type == "ultra" else "Google AI Pro")
+        else:
+            plan_type = "free"
+            plan_name = raw_plan_name or "Free Tier"
+
         return cls(
             email=email,
             access_token=str(data.get("access_token", "")),
@@ -150,7 +182,7 @@ class AntigravityAccount:
             expires_at=float(data.get("expires_at", 0.0) or 0.0),
             project_id=str(data.get("project_id", "aicode-consumers") or "aicode-consumers"),
             managed_project_id=str(data.get("managed_project_id", "") or ""),
-            tier_id=str(data.get("tier_id", "") or ""),
+            tier_id=tier_id,
             source=str(data.get("source", "oauth_pkce")),
             status=str(data.get("status", "active")),
             exhausted_until=float(data["exhausted_until"]) if data.get("exhausted_until") else None,
@@ -160,8 +192,8 @@ class AntigravityAccount:
             assigned_role=str(data.get("assigned_role", "all")),
             total_requests=int(data.get("total_requests", 0)),
             failure_count=int(data.get("failure_count", 0)),
-            plan_name=str(data.get("plan_name", "") or ""),
-            plan_type=str(data.get("plan_type", "free") or "free"),
+            plan_name=plan_name,
+            plan_type=plan_type,
             quota_summary=dict(data.get("quota_summary", {}) or {}) if isinstance(data.get("quota_summary"), dict) else {},
         )
 
@@ -605,6 +637,23 @@ class AntigravityAccountPoolManager:
         """Register or update an account from AntigravityCredentials or dict, preserving cooldown/disabled state."""
         if hasattr(creds, "email"):
             em = (creds.email or "primary").strip().lower()
+            tier_id = getattr(creds, "tier_id", "") or ""
+            p_name = getattr(creds, "plan_name", "") or ""
+            p_type = getattr(creds, "plan_type", "") or ""
+            p_low = p_name.lower()
+            t_low = tier_id.lower()
+            if "ultra" in p_low or "ultra" in t_low:
+                p_type = "ultra"
+                p_name = p_name or "Google AI Ultra"
+            elif "pro" in p_low or "pro" in t_low:
+                p_type = "pro"
+                p_name = p_name or "Google AI Pro"
+            elif p_type in {"ultra", "pro"}:
+                p_name = p_name or ("Google AI Ultra" if p_type == "ultra" else "Google AI Pro")
+            else:
+                p_type = "free"
+                p_name = p_name or "Free Tier"
+
             acc = AntigravityAccount(
                 email=em,
                 access_token=getattr(creds, "access_token", ""),
@@ -612,9 +661,12 @@ class AntigravityAccountPoolManager:
                 expires_at=getattr(creds, "expires_at", 0.0),
                 project_id=getattr(creds, "project_id", "aicode-consumers") or "aicode-consumers",
                 managed_project_id=getattr(creds, "managed_project_id", ""),
-                tier_id=getattr(creds, "tier_id", ""),
+                tier_id=tier_id,
                 source=getattr(creds, "source", "oauth_pkce"),
                 status="active",
+                plan_name=p_name,
+                plan_type=p_type,
+                quota_summary=dict(getattr(creds, "quota_summary", {}) or {}),
             )
         elif isinstance(creds, dict):
             acc = AntigravityAccount.from_dict(creds)
@@ -640,12 +692,26 @@ class AntigravityAccountPoolManager:
                     acc.managed_project_id = old["managed_project_id"]
                 if not acc.tier_id and old.get("tier_id"):
                     acc.tier_id = old["tier_id"]
-                if not acc.plan_name and old.get("plan_name"):
-                    acc.plan_name = old["plan_name"]
-                if (not acc.plan_type or acc.plan_type == "free") and old.get("plan_type"):
+                if not acc.plan_name or acc.plan_name.lower() in {"free", "free tier"}:
+                    if old.get("plan_name") and old["plan_name"].lower() not in {"free", "free tier"}:
+                        acc.plan_name = old["plan_name"]
+                if (not acc.plan_type or acc.plan_type == "free") and old.get("plan_type") in {"pro", "ultra"}:
                     acc.plan_type = old["plan_type"]
                 if not acc.quota_summary and old.get("quota_summary"):
                     acc.quota_summary = old["quota_summary"]
+
+                # Re-check tier_id and plan_name after merge with old
+                t_check = (acc.tier_id or "").lower()
+                n_check = (acc.plan_name or "").lower()
+                if "ultra" in t_check or "ultra" in n_check:
+                    acc.plan_type = "ultra"
+                    if not acc.plan_name or acc.plan_name.lower() in {"free", "free tier"}:
+                        acc.plan_name = "Google AI Ultra"
+                elif "pro" in t_check or "pro" in n_check:
+                    acc.plan_type = "pro"
+                    if not acc.plan_name or acc.plan_name.lower() in {"free", "free tier"}:
+                        acc.plan_name = "Google AI Pro"
+
                 if not acc.project_id or acc.project_id == "aicode-consumers":
                     if acc.managed_project_id and acc.managed_project_id != "aicode-consumers":
                         acc.project_id = acc.managed_project_id
@@ -798,14 +864,20 @@ class AntigravityAccountPoolManager:
                 paid_tier = data.get("paidTier")
                 current_tier = data.get("currentTier")
                 if isinstance(paid_tier, dict) and paid_tier.get("name"):
-                    plan_name = str(paid_tier.get("name"))
+                    p_name = str(paid_tier.get("name") or "")
                     p_id = str(paid_tier.get("id") or "").lower()
-                    if "ultra" in plan_name.lower() or "ultra" in p_id:
+                    if "ultra" in p_name.lower() or "ultra" in p_id:
                         plan_type = "ultra"
-                    elif "pro" in plan_name.lower() or "pro" in p_id:
+                        plan_name = p_name or "Google AI Ultra"
+                    elif "pro" in p_name.lower() or "pro" in p_id:
                         plan_type = "pro"
+                        plan_name = p_name or "Google AI Pro"
+                    elif "free" in p_id or "free" in p_name.lower() or "starter" in p_name.lower():
+                        plan_type = "free"
+                        plan_name = "Free Tier"
                     else:
-                        plan_type = "pro"
+                        plan_type = "free"
+                        plan_name = p_name or "Free Tier"
                 elif isinstance(current_tier, dict):
                     c_name = str(current_tier.get("name") or "")
                     c_id = str(current_tier.get("id") or "").lower()

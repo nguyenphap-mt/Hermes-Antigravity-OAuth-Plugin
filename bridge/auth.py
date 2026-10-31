@@ -101,6 +101,8 @@ class AntigravityCredentials:
     tier_id: str = ""
     source: str = "oauth_pkce"
     plan_name: str = ""
+    plan_type: str = ""
+    quota_summary: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def effective_project_id(self) -> str:
@@ -131,6 +133,8 @@ class AntigravityCredentials:
             "tier_id": self.tier_id,
             "source": self.source,
             "plan_name": self.plan_name,
+            "plan_type": self.plan_type,
+            "quota_summary": self.quota_summary,
             "updated_at": time.time(),
         }
 
@@ -144,8 +148,10 @@ class AntigravityCredentials:
             project_id=data.get("project_id") or "",
             managed_project_id=data.get("managed_project_id") or "",
             tier_id=data.get("tier_id") or "",
-            source=data.get("source") or "stored",
-            plan_name=str(data.get("plan_name") or ""),
+            source=data.get("source") or "oauth_pkce",
+            plan_name=data.get("plan_name") or "",
+            plan_type=data.get("plan_type") or "",
+            quota_summary=dict(data.get("quota_summary") or {}) if isinstance(data.get("quota_summary"), dict) else {},
         )
 
 
@@ -291,12 +297,22 @@ class AntigravityAuthManager:
             prev_acct = accounts.get(email_key) if isinstance(accounts.get(email_key), dict) else {}
             new_acct = dict(prev_acct)
             for k, v in creds.to_dict().items():
-                if k in {"managed_project_id", "tier_id"} and not v and prev_acct.get(k):
+                if k in {"managed_project_id", "tier_id", "plan_name", "plan_type", "quota_summary"} and not v and prev_acct.get(k):
                     continue
                 if k == "project_id" and (not v or v == DEFAULT_PROJECT_ID) and prev_acct.get("managed_project_id"):
                     new_acct["project_id"] = prev_acct["managed_project_id"]
                     continue
                 new_acct[k] = v
+            tid = str(new_acct.get("tier_id", "") or "").lower()
+            pname = str(new_acct.get("plan_name", "") or "")
+            if "ultra" in tid or "ultra" in pname.lower():
+                new_acct["plan_type"] = "ultra"
+                if not pname or pname.lower() in {"free", "free tier"}:
+                    new_acct["plan_name"] = "Google AI Ultra"
+            elif "pro" in tid or "pro" in pname.lower():
+                new_acct["plan_type"] = "pro"
+                if not pname or pname.lower() in {"free", "free tier"}:
+                    new_acct["plan_name"] = "Google AI Pro"
             if reset_status or "status" not in new_acct:
                 new_acct["status"] = "active"
                 new_acct["exhausted_until"] = None
@@ -639,6 +655,7 @@ class AntigravityAuthManager:
             current_tier = data.get("currentTier")
             tier_id = ""
             plan_name = ""
+            plan_type = "free"
             if isinstance(paid_tier, dict) and paid_tier.get("name"):
                 plan_name = str(paid_tier.get("name"))
                 tier_id = str(paid_tier.get("id") or "")
@@ -648,10 +665,23 @@ class AntigravityAuthManager:
                     tier_id = str(current_tier.get("id") or "")
             if not tier_id:
                 tier_id = str(data.get("tierId") or "")
+
+            p_low = plan_name.lower()
+            t_low = tier_id.lower()
+            if "ultra" in p_low or "ultra" in t_low:
+                plan_type = "ultra"
+                plan_name = plan_name or "Google AI Ultra"
+            elif "pro" in p_low or "pro" in t_low:
+                plan_type = "pro"
+                plan_name = plan_name or "Google AI Pro"
+            else:
+                plan_type = "free"
+                plan_name = plan_name or "Free Tier"
+
             if tier_id:
                 creds.tier_id = tier_id
-            if plan_name:
-                creds.plan_name = plan_name
+            creds.plan_name = plan_name
+            creds.plan_type = plan_type
 
             pid = self._extract_companion_project_id(data)
             if not pid or not current_tier:

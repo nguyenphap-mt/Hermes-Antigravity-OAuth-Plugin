@@ -115,6 +115,7 @@ class AccountItem(BaseModel):
     usage_count: int = 0
     plan_name: str = "Free Tier"
     plan_type: str = "free"  # "ultra" | "pro" | "free"
+    tier_id: Optional[str] = ""
     quota_summary: Optional[Dict[str, Any]] = None
 
 
@@ -408,10 +409,22 @@ async def get_accounts():
     items: List[AccountItem] = []
     for acc in accounts:
         cd = max(0, int(acc.exhausted_until - now)) if acc.exhausted_until else 0
-        role = getattr(acc, "role", getattr(acc, "assigned_role", "all"))
+        role = str(getattr(acc, "role", getattr(acc, "assigned_role", "all")) or "all")
         usage_count = getattr(acc, "request_count", getattr(acc, "total_requests", 0))
-        plan_name = getattr(acc, "plan_name", "") or "Free Tier"
+        tier_id = getattr(acc, "tier_id", "") or ""
         plan_type = getattr(acc, "computed_plan_type", getattr(acc, "plan_type", "free")) or "free"
+        plan_name = getattr(acc, "display_plan_name", getattr(acc, "plan_name", "")) or ""
+        t_low = tier_id.lower()
+        p_low = plan_name.lower()
+        if "ultra" in t_low or "ultra" in p_low:
+            plan_type = "ultra"
+            plan_name = plan_name or "Google AI Ultra"
+        elif "pro" in t_low or "pro" in p_low:
+            plan_type = "pro"
+            plan_name = plan_name or "Google AI Pro"
+        elif not plan_name or plan_name.lower() in {"free", "free tier", "antigravity starter quota"}:
+            plan_name = "Free Tier"
+            plan_type = "free"
         quota_summary = getattr(acc, "quota_summary", None) or None
         items.append(AccountItem(
             email=acc.email,
@@ -426,6 +439,7 @@ async def get_accounts():
             usage_count=usage_count,
             plan_name=plan_name,
             plan_type=plan_type,
+            tier_id=tier_id,
             quota_summary=quota_summary,
         ))
 

@@ -155,3 +155,45 @@ class TestDashboardPluginAPI:
         resp = client.post("/api/plugins/antigravity/accounts/refresh-plan-quota", json={"email": "nonexistent@example.com"})
         assert resp.status_code in {200, 400}
 
+    def test_accounts_pro_tier_resolution(self, monkeypatch, client):
+        """Verify accounts endpoint reports pro tier and Google AI Pro name when tier_id is g1-pro-tier."""
+        from unittest.mock import MagicMock
+        from dashboard import plugin_api
+
+        mock_acc = MagicMock()
+        mock_acc.email = "pro_user@gmail.com"
+        mock_acc.tier_id = "g1-pro-tier"
+        mock_acc.plan_name = ""
+        mock_acc.plan_type = "free"
+        mock_acc.computed_plan_type = "pro"
+        mock_acc.display_plan_name = "Google AI Pro"
+        mock_acc.quota_summary = {"gemini_weekly_pct": 85}
+        mock_acc.status = "active"
+        mock_acc.project_id = "aicode-consumers"
+        mock_acc.expires_at = 0.0
+        mock_acc.is_expired = False
+        mock_acc.is_available = True
+        mock_acc.exhausted_until = None
+        mock_acc.role = "all"
+        mock_acc.assigned_role = "all"
+        mock_acc.total_requests = 10
+
+        mock_pool = MagicMock()
+        mock_pool.list_accounts.return_value = [mock_acc]
+        mock_pool.get_active_account.return_value = mock_acc
+        mock_pool.get_rotation_strategy.return_value = "sharded"
+
+        monkeypatch.setattr(plugin_api, "_get_ag_account_pool", lambda: mock_pool)
+
+        resp = client.get("/api/plugins/antigravity/accounts")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert len(data["accounts"]) == 1
+        item = data["accounts"][0]
+        assert item["email"] == "pro_user@gmail.com"
+        assert item["plan_type"] == "pro"
+        assert item["plan_name"] == "Google AI Pro"
+        assert item["tier_id"] == "g1-pro-tier"
+
+

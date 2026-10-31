@@ -848,20 +848,29 @@
                 var avatarCls = "ag-avatar " +
                   (isDisabled ? "ag-avatar-disabled" : (acc.is_active ? "ag-avatar-active" : "ag-avatar-ready"));
 
+                var tierId = (acc.tier_id || "").toLowerCase();
                 var planType = (acc.plan_type || "").toLowerCase();
                 var planName = acc.plan_name || "";
-                if (!planType || planType === "free") {
-                  if (planName.toLowerCase().indexOf("ultra") !== -1) planType = "ultra";
-                  else if (planName.toLowerCase().indexOf("pro") !== -1) planType = "pro";
+                if (tierId.indexOf("ultra") !== -1 || planName.toLowerCase().indexOf("ultra") !== -1) {
+                  planType = "ultra";
+                } else if (tierId.indexOf("pro") !== -1 || planName.toLowerCase().indexOf("pro") !== -1) {
+                  planType = "pro";
+                }
+                if (planType === "pro" && (!planName || planName === "Free Tier")) {
+                  planName = "Google AI Pro";
+                } else if (planType === "ultra" && (!planName || planName === "Free Tier")) {
+                  planName = "Google AI Ultra";
+                } else if (!planName) {
+                  planName = "Free Tier";
                 }
                 var planBadgeCls = planType === "ultra"
                   ? "ag-badge ag-badge-purple"
                   : (planType === "pro" ? "ag-badge ag-badge-blue" : "ag-badge ag-badge-neutral");
                 var planLabel = planType === "ultra"
-                  ? ("⚡ " + (planName || "Google AI Ultra"))
+                  ? ("⚡ " + planName)
                   : (planType === "pro"
-                      ? ("💎 " + (planName || "Google AI Pro"))
-                      : ("🌱 " + (planName || "Free Tier")));
+                      ? ("💎 " + planName)
+                      : ("🌱 " + planName));
 
                 return h("div", {
                   key: acc.email,
