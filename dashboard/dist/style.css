@@ -77,6 +77,25 @@
   background: #08090d !important;
   border: 1px solid rgba(239, 68, 68, 0.28) !important;
   opacity: 0.82;
+.ag-subcard-selected {
+  border: 1.5px solid #22d3ee !important;
+  box-shadow: 0 0 20px -2px rgba(34, 211, 238, 0.3) !important;
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.08) 0%, #090a0f 100%) !important;
+}
+
+.ag-subcard-clickable {
+  cursor: pointer !important;
+}
+
+.ag-subcard-clickable:hover {
+  border-color: rgba(34, 211, 238, 0.45) !important;
+}
+
+.ag-badge-cyan {
+  background: rgba(34, 211, 238, 0.16) !important;
+  color: #22d3ee !important;
+  border: 1px solid rgba(34, 211, 238, 0.45) !important;
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.2) !important;
 }
 
 /* ---------------------------------------------------------------------------

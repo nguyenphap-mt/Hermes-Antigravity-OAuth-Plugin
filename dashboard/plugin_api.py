@@ -691,19 +691,21 @@ async def get_antigravity_models(refresh: bool = False):
 
 
 @router.get("/antigravity/quota")
-async def get_antigravity_quota(refresh: bool = False):
-    """Fetch live quota buckets and rate limit summary from Code Assist API."""
+async def get_antigravity_quota(email: Optional[str] = None, refresh: bool = False):
+    """Fetch live quota buckets and rate limit summary from Code Assist API for a specific account (or active account)."""
     try:
-        try:
-            from tools.antigravity_bridge.models import ModelDiscoveryManager
-        except ImportError:
-            from bridge.models import ModelDiscoveryManager
-        mgr = ModelDiscoveryManager()
-        summary = mgr.fetch_quota_summary(force_refresh=refresh)
-        return {"ok": True, "summary": summary}
+        pool = _get_ag_account_pool()
+        target = (email or "").strip().lower()
+        if not target or target == "active":
+            active = pool.get_active_account()
+            target = active.email if active else ""
+
+        loop = asyncio.get_event_loop()
+        summary = await loop.run_in_executor(None, pool.get_account_quota_buckets, target, refresh)
+        return {"ok": True, "email": target, "summary": summary}
     except Exception as e:
-        logger.error(f"Failed to fetch quota: {e}")
-        return {"ok": False, "summary": {}, "error": str(e)}
+        logger.error(f"Failed to fetch quota for {email}: {e}")
+        return {"ok": False, "email": email or "", "summary": {}, "error": str(e)}
 
 
 # ─── Google Flow Video Endpoints ─────────────────────────────────────────────

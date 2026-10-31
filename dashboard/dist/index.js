@@ -409,6 +409,14 @@
     var quota = quotaState[0];
     var setQuota = quotaState[1];
 
+    var selectedEmailState = useState(null);
+    var selectedEmail = selectedEmailState[0];
+    var setSelectedEmail = selectedEmailState[1];
+
+    var quotaLoadingState = useState(false);
+    var quotaLoading = quotaLoadingState[0];
+    var setQuotaLoading = quotaLoadingState[1];
+
     var searchState = useState("");
     var search = searchState[0];
     var setSearch = searchState[1];
@@ -417,12 +425,32 @@
     var loadingAccounts = loadingAccountsState[0];
     var setLoadingAccounts = loadingAccountsState[1];
 
+    var fetchQuotaForAccount = useCallback(function (targetEmail, forceRefresh) {
+      if (!targetEmail) return;
+      setQuotaLoading(true);
+      var url = "/antigravity/quota?email=" + encodeURIComponent(targetEmail) + (forceRefresh ? "&refresh=true" : "");
+      apiFetch(url).then(function (res) {
+        if (res.ok && res.summary) {
+          setQuota(res.summary);
+        }
+      }).catch(function (e) {
+        console.debug("Fetch quota error for " + targetEmail + ":", e);
+      }).finally(function () {
+        setQuotaLoading(false);
+      });
+    }, []);
+
     var loadAccounts = useCallback(function () {
       setLoadingAccounts(true);
       apiFetch("/accounts").then(function (res) {
         if (res.ok) {
-          setAccounts(res.accounts || []);
+          var accs = res.accounts || [];
+          setAccounts(accs);
           setPoolInfo({ strategy: res.strategy, active_email: res.active_email, mode: res.mode });
+          setSelectedEmail(function (prev) {
+            var validPrev = prev && accs.some(function (a) { return a.email === prev; });
+            return validPrev ? prev : (res.active_email || (accs[0] ? accs[0].email : null));
+          });
         }
       }).catch(function (e) {
         console.error("Accounts fetch failed:", e);
@@ -436,15 +464,49 @@
         if (res.ok) setModels(res.models || []);
       }).catch(function () {});
 
-      apiFetch("/antigravity/quota").then(function (res) {
-        if (res.ok) setQuota(res.summary);
-      }).catch(function () {});
-    }, []);
+      var target = selectedEmail || poolInfo.active_email;
+      if (target) {
+        fetchQuotaForAccount(target, false);
+      }
+    }, [selectedEmail, poolInfo.active_email, fetchQuotaForAccount]);
+
+    function handleSelectAccount(email) {
+      if (!email) return;
+      setSelectedEmail(email);
+      // Immediately preview local cached quota if available
+      var matched = accounts.find(function (a) { return a.email === email; });
+      if (matched && matched.quota_summary) {
+        var gPct = matched.quota_summary.gemini_weekly_pct;
+        var cPct = matched.quota_summary.claude_weekly_pct;
+        var groups = [];
+        if (gPct != null) {
+          var b1 = [{ displayName: "Weekly Limit Remaining", remainingFraction: gPct / 100.0, bucketId: "gemini_weekly" }];
+          if (matched.quota_summary.gemini_5h_pct != null) {
+            b1.push({ displayName: "Five Hour Limit Remaining", remainingFraction: matched.quota_summary.gemini_5h_pct / 100.0, bucketId: "gemini_5h" });
+          }
+          groups.push({ displayName: "Gemini Models", buckets: b1 });
+        }
+        if (cPct != null) {
+          var b2 = [{ displayName: "Weekly Limit Remaining", remainingFraction: cPct / 100.0, bucketId: "claude_weekly" }];
+          if (matched.quota_summary.claude_5h_pct != null) {
+            b2.push({ displayName: "Five Hour Limit Remaining", remainingFraction: matched.quota_summary.claude_5h_pct / 100.0, bucketId: "claude_5h" });
+          }
+          groups.push({ displayName: "Claude and GPT models", buckets: b2 });
+        }
+        if (groups.length > 0) {
+          setQuota({ groups: groups });
+        }
+      }
+      fetchQuotaForAccount(email, false);
+    }
 
     useEffect(function () {
       loadAccounts();
+    }, [loadAccounts]);
+
+    useEffect(function () {
       loadModelsAndQuota();
-    }, [loadAccounts, loadModelsAndQuota]);
+    }, [loadModelsAndQuota]);
 
     function handleSwitch(email) {
       apiFetch("/accounts/switch", {
@@ -843,8 +905,11 @@
               sortedAccounts.map(function (acc) {
                 var isDisabled = acc.status === "disabled";
                 var isCooling = !isDisabled && (acc.cooldown_seconds > 0 || acc.status === "cooling_down");
-                var cardCls = "ag-subcard flex flex-col justify-between " +
-                  (isDisabled ? "ag-subcard-disabled" : (acc.is_active ? "ag-subcard-active" : ""));
+                var effectiveSelectedEmail = selectedEmail || poolInfo.active_email || (accounts[0] ? accounts[0].email : null);
+                var isSelected = effectiveSelectedEmail === acc.email;
+                var cardCls = "ag-subcard ag-subcard-clickable flex flex-col justify-between " +
+                  (isDisabled ? "ag-subcard-disabled" : (acc.is_active ? "ag-subcard-active" : "")) +
+                  (isSelected ? " ag-subcard-selected" : "");
                 var avatarCls = "ag-avatar " +
                   (isDisabled ? "ag-avatar-disabled" : (acc.is_active ? "ag-avatar-active" : "ag-avatar-ready"));
 
@@ -875,6 +940,8 @@
                 return h("div", {
                   key: acc.email,
                   className: cardCls,
+                  onClick: function () { handleSelectAccount(acc.email); },
+                  title: "Nhấp để xem hạn mức Quota chi tiết của " + acc.email,
                 }, [
                   h("div", { className: "space-y-3" }, [
                     h("div", { className: "flex items-start justify-between gap-2" }, [
@@ -885,9 +952,15 @@
                           h("div", { className: "text-[11px] text-zinc-500 font-mono truncate" }, acc.project_id || "aicode-consumers"),
                         ]),
                       ]),
-                      acc.is_active && !isDisabled && h("span", {
-                        className: "ag-badge ag-badge-emerald",
-                      }, "ACTIVE"),
+                      h("div", { className: "flex items-center gap-1.5 flex-shrink-0" }, [
+                        isSelected && h("span", {
+                          className: "ag-badge ag-badge-cyan",
+                          title: "Đang xem hạn mức Quota của tài khoản này ở bảng bên dưới",
+                        }, "👁 ĐANG XEM"),
+                        acc.is_active && !isDisabled && h("span", {
+                          className: "ag-badge ag-badge-emerald",
+                        }, "ACTIVE"),
+                      ]),
                     ]),
 
                     // Plan, Role, and Status tags
@@ -953,12 +1026,12 @@
                     style: { borderTop: "1px solid rgba(255,255,255,0.06)" },
                   }, [
                     !acc.is_active && !isDisabled && h("button", {
-                      onClick: function () { handleSwitch(acc.email); },
+                      onClick: function (e) { e.stopPropagation(); handleSwitch(acc.email); },
                       className: "ag-btn ag-btn-primary ag-btn-sm",
                     }, "Chọn Active"),
                     (isDisabled || isCooling) && h("button", {
                       disabled: checkingUnlock === acc.email || checkingUnlock === "all",
-                      onClick: function () { handleCheckUnlock(acc.email); },
+                      onClick: function (e) { e.stopPropagation(); handleCheckUnlock(acc.email); },
                       className: "ag-btn ag-btn-amber ag-btn-sm",
                       title: "Kiểm tra trực tiếp xem Google đã mở khóa tài khoản này chưa",
                     }, [
@@ -969,19 +1042,21 @@
                       href: "https://forms.gle/hGzM9MEUv2azZsrb9",
                       target: "_blank",
                       rel: "noopener noreferrer",
+                      onClick: function (e) { e.stopPropagation(); },
                       className: "ag-btn ag-btn-secondary ag-btn-sm",
                       title: "Mở biểu mẫu kháng nghị chính thức của Google Antigravity",
                     }, "Kháng nghị ↗"),
                     h("button", {
                       disabled: refreshingPlanQuota,
-                      onClick: function () { handleRefreshPlanQuota(acc.email); },
+                      onClick: function (e) { e.stopPropagation(); handleRefreshPlanQuota(acc.email); },
                       className: "ag-btn ag-btn-secondary ag-btn-icon",
                       style: { width: "28px", height: "28px", borderRadius: "8px" },
                       title: "Quét lại Plan & Quota của tài khoản này",
                     }, h(Icon, { name: "refresh", className: "w-3.5 h-3.5 " + (refreshingPlanQuota ? "animate-spin" : "") })),
                     h("select", {
                       value: acc.role,
-                      onChange: function (e) { handleRole(acc.email, e.target.value); },
+                      onClick: function (e) { e.stopPropagation(); },
+                      onChange: function (e) { e.stopPropagation(); handleRole(acc.email, e.target.value); },
                       className: "ag-select",
                       style: { padding: "4px 8px", fontSize: "11px", marginLeft: "auto" },
                     }, [
@@ -990,7 +1065,7 @@
                       h("option", { value: "image_gen", key: "r-img" }, "Role: Image"),
                     ]),
                     h("button", {
-                      onClick: function () { handleRemove(acc.email); },
+                      onClick: function (e) { e.stopPropagation(); handleRemove(acc.email); },
                       className: "ag-btn ag-btn-danger ag-btn-icon",
                       style: { width: "28px", height: "28px", borderRadius: "8px" },
                       title: "Xóa tài khoản",
@@ -1001,52 +1076,108 @@
             ),
       ]),
 
-      // 2. Quota Telemetry (If Available)
-      quota && quota.groups && quota.groups.length > 0 && h("div", {
-        className: "ag-card",
-      }, [
-        h("div", {
-          className: "flex items-center gap-3 pb-3 mb-4",
-          style: { borderBottom: "1px solid rgba(255,255,255,0.08)" },
-        }, [
-          h("div", { className: "ag-avatar ag-avatar-ready" },
-            h(Icon, { name: "activity", className: "w-4 h-4" })
-          ),
-          h("div", null, [
-            h("h3", { className: "text-sm font-bold text-white" }, "Hạn Mức Quota API (Google Code Assist)"),
-            h("p", { className: "text-xs text-zinc-400" }, "Theo dõi tỷ lệ sử dụng thực tế và chu kỳ hồi phục hạn mức"),
-          ]),
-        ]),
+      // 2. Quota Telemetry for Selected Account
+      (function () {
+        var effectiveSelectedEmail = selectedEmail || poolInfo.active_email || (accounts[0] ? accounts[0].email : null);
+        var currentAccount = accounts.find(function (a) { return a.email === effectiveSelectedEmail; }) || accounts[0] || null;
+        if (!currentAccount) return null;
 
-        h("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
-          quota.groups.map(function (grp, idx) {
-            return h("div", { key: idx, className: "ag-subcard" }, [
-              h("div", { className: "text-xs font-semibold text-zinc-200 mb-2" }, grp.displayName || "Group"),
-              h("div", { className: "space-y-3" },
-                (grp.buckets || []).map(function (b, bIdx) {
-                  var rem = b.remainingFraction || 0;
-                  var pct = Math.round(rem * 100);
-                  return h("div", { key: bIdx, className: "space-y-1" }, [
-                    h("div", { className: "flex justify-between text-xs font-mono" }, [
-                      h("span", { className: "text-zinc-400" }, b.displayName || b.bucketId),
-                      h("span", { className: pct > 20 ? "text-emerald-400 font-bold" : "text-amber-400 font-bold" }, pct + "% còn lại"),
-                    ]),
-                    h("div", { className: "w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden" }, [
-                      h("div", {
-                        className: "h-full rounded-full",
-                        style: {
-                          width: pct + "%",
-                          background: pct > 20 ? "linear-gradient(90deg, #10b981, #06b6d4)" : "#f59e0b",
-                        },
-                      }),
-                    ]),
-                  ]);
-                })
+        var isPro = currentAccount.plan_type === "pro";
+        var isUltra = currentAccount.plan_type === "ultra";
+        var planBadge = isUltra
+          ? h("span", { className: "ag-badge ag-badge-purple" }, "⚡ " + (currentAccount.plan_name || "Google AI Ultra"))
+          : (isPro
+              ? h("span", { className: "ag-badge ag-badge-blue" }, "💎 " + (currentAccount.plan_name || "Google AI Pro"))
+              : h("span", { className: "ag-badge ag-badge-neutral" }, "🌱 " + (currentAccount.plan_name || "Free Tier")));
+
+        return h("div", {
+          className: "ag-card",
+          id: "ag-quota-section",
+        }, [
+          h("div", {
+            className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 mb-4",
+            style: { borderBottom: "1px solid rgba(255,255,255,0.08)" },
+          }, [
+            h("div", { className: "flex items-center gap-3" }, [
+              h("div", { className: "ag-avatar " + (currentAccount.is_active ? "ag-avatar-active" : "ag-avatar-ready") },
+                (currentAccount.email[0] || "U").toUpperCase()
               ),
-            ]);
-          })
-        ),
-      ]),
+              h("div", null, [
+                h("div", { className: "flex flex-wrap items-center gap-2" }, [
+                  h("h3", { className: "text-sm font-bold text-white" }, "Hạn Mức Quota API: " + currentAccount.email),
+                  planBadge,
+                  currentAccount.is_active && h("span", { className: "ag-badge ag-badge-emerald" }, "ACTIVE"),
+                  h("span", { className: "ag-badge ag-badge-cyan" }, "ĐANG XEM CHI TIẾT"),
+                ]),
+                h("p", { className: "text-xs text-zinc-400 mt-0.5" },
+                  "Theo dõi tỷ lệ sử dụng thực tế và chu kỳ hồi phục • Nhấp vào bất kỳ thẻ tài khoản nào ở trên để xem quota của tài khoản đó"
+                ),
+              ]),
+            ]),
+
+            h("div", { className: "flex items-center gap-2" }, [
+              h("button", {
+                disabled: quotaLoading,
+                onClick: function () { fetchQuotaForAccount(currentAccount.email, true); },
+                className: "ag-btn ag-btn-secondary ag-btn-sm",
+                title: "Quét trực tiếp hạn mức Quota từ Google Code Assist cho " + currentAccount.email,
+              }, [
+                h(Icon, { name: "refresh", className: "w-3.5 h-3.5 " + (quotaLoading ? "animate-spin" : "") }),
+                h("span", null, quotaLoading ? "Đang quét Quota..." : "Làm mới Quota tài khoản này"),
+              ]),
+            ]),
+          ]),
+
+          quotaLoading
+            ? h("div", { className: "py-10 text-center text-xs text-zinc-400" }, [
+                h(Icon, { name: "refresh", className: "w-5 h-5 animate-spin mx-auto mb-2 text-cyan-400" }),
+                h("span", null, "Đang kết nối Google Code Assist để lấy dữ liệu hạn mức của " + currentAccount.email + "..."),
+              ])
+            : (quota && quota.groups && quota.groups.length > 0)
+              ? h("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                  quota.groups.map(function (grp, idx) {
+                    return h("div", { key: idx, className: "ag-subcard" }, [
+                      h("div", { className: "text-xs font-semibold text-zinc-200 mb-2 flex items-center justify-between" }, [
+                        h("span", null, grp.displayName || "Group"),
+                        h("span", { className: "text-[11px] text-zinc-500 font-mono" }, currentAccount.email),
+                      ]),
+                      h("div", { className: "space-y-3" },
+                        (grp.buckets || []).map(function (b, bIdx) {
+                          var rem = b.remainingFraction != null ? b.remainingFraction : 0;
+                          var pct = Math.round(rem * 100);
+                          var isZero = pct <= 0;
+                          var isLow = pct <= 20;
+                          return h("div", { key: bIdx, className: "space-y-1" }, [
+                            h("div", { className: "flex justify-between text-xs font-mono" }, [
+                              h("span", { className: "text-zinc-400" }, b.displayName || b.bucketId),
+                              h("span", {
+                                className: isZero ? "text-red-400 font-bold" : (isLow ? "text-amber-400 font-bold" : "text-emerald-400 font-bold"),
+                              }, pct + "% còn lại"),
+                            ]),
+                            h("div", { className: "w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden" }, [
+                              h("div", {
+                                className: "h-full rounded-full",
+                                style: {
+                                  width: Math.max(0, Math.min(100, pct)) + "%",
+                                  background: isZero ? "#f87171" : (isLow ? "#f59e0b" : "linear-gradient(90deg, #10b981, #06b6d4)"),
+                                },
+                              }),
+                            ]),
+                          ]);
+                        })
+                      ),
+                    ]);
+                  })
+                )
+              : h("div", { className: "py-8 text-center text-xs text-zinc-400 ag-subcard" }, [
+                  h("p", { className: "mb-2 text-zinc-300" }, "Chưa tải được bảng quota chi tiết từ Google Code Assist cho tài khoản này."),
+                  h("button", {
+                    onClick: function () { fetchQuotaForAccount(currentAccount.email, true); },
+                    className: "ag-btn ag-btn-primary ag-btn-sm",
+                  }, "Quét Quota Trực Tiếp Ngay"),
+                ]),
+        ]);
+      })(),
 
       // 3. Dynamic Model Catalog (32+ Models)
       h("div", { className: "ag-card" }, [

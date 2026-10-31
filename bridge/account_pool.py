@@ -978,3 +978,160 @@ class AntigravityAccountPoolManager:
             "quota_summary": quota_summary,
             "message": f"Đã cập nhật gói {plan_name} ({plan_type.upper()}) và hạn mức quota cho {target}.",
         }
+
+    def _synthesize_quota_groups(self, acc: AntigravityAccount) -> Dict[str, Any]:
+        """Synthesize groups/buckets structure from stored quota_summary."""
+        qs = acc.quota_summary or {}
+        g_pct = qs.get("gemini_weekly_pct")
+        c_pct = qs.get("claude_weekly_pct")
+        groups = []
+        if g_pct is not None:
+            g_b = [{
+                "bucketId": "gemini_weekly",
+                "displayName": "Weekly Limit Remaining",
+                "remainingFraction": float(g_pct) / 100.0,
+            }]
+            g_5h = qs.get("gemini_5h_pct")
+            if g_5h is not None:
+                g_b.append({
+                    "bucketId": "gemini_5h",
+                    "displayName": "Five Hour Limit Remaining",
+                    "remainingFraction": float(g_5h) / 100.0,
+                })
+            groups.append({
+                "displayName": "Gemini Models",
+                "buckets": g_b,
+            })
+        if c_pct is not None:
+            c_b = [{
+                "bucketId": "claude_weekly",
+                "displayName": "Weekly Limit Remaining",
+                "remainingFraction": float(c_pct) / 100.0,
+            }]
+            c_5h = qs.get("claude_5h_pct")
+            if c_5h is not None:
+                c_b.append({
+                    "bucketId": "claude_5h",
+                    "displayName": "Five Hour Limit Remaining",
+                    "remainingFraction": float(c_5h) / 100.0,
+                })
+            groups.append({
+                "displayName": "Claude and GPT models",
+                "buckets": c_b,
+            })
+        return {"groups": groups}
+
+    def get_account_quota_buckets(self, email: str, force_refresh: bool = False) -> Dict[str, Any]:
+        """Query live retrieveUserQuotaSummary buckets for a specific account or fallback to synthesized groups."""
+        target = (email or "").strip().lower()
+        if not target or target == "active":
+            acc = self.get_active_account()
+            if not acc:
+                return {}
+            target = acc.email
+
+        acc = self.get_account(target)
+        if not acc:
+            return {}
+
+        try:
+            try:
+                from tools.antigravity_bridge.auth import AntigravityAuthManager, AntigravityCredentials
+                from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                from tools.antigravity_bridge.models import QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT
+            except ImportError:
+                from bridge.auth import AntigravityAuthManager, AntigravityCredentials
+                from bridge.fingerprint import AntigravityFingerprint
+                from bridge.models import QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT
+
+            auth_mgr = AntigravityAuthManager(auth_file=self.storage_path)
+            creds = AntigravityCredentials(
+                access_token=acc.access_token,
+                refresh_token=acc.refresh_token,
+                expires_at=acc.expires_at,
+                email=acc.email,
+                project_id=acc.project_id,
+                managed_project_id=acc.managed_project_id,
+                tier_id=acc.tier_id,
+                source=acc.source,
+                plan_name=acc.plan_name,
+                plan_type=acc.computed_plan_type,
+            )
+            if creds.is_expired and creds.refresh_token:
+                try:
+                    creds = auth_mgr.refresh_access_token(creds)
+                    acc.access_token = creds.access_token
+                    acc.expires_at = creds.expires_at
+                except Exception as e:
+                    logger.warning("Token refresh failed during quota fetch for %s: %s", target, e)
+
+            pid = acc.effective_project_id
+            headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=pid)
+            body = json.dumps({"project": pid}).encode("utf-8")
+
+            import urllib.request
+            import urllib.error
+            import gzip
+
+            q_data: Dict[str, Any] = {}
+            for ep in (QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT):
+                try:
+                    req = urllib.request.Request(ep, data=body, headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=10.0) as resp:
+                        raw = resp.read()
+                        if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                            raw = gzip.decompress(raw)
+                        q_data = json.loads(raw.decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as he:
+                    if he.code in {404, 500, 502, 503, 504} and ep == QUOTA_ENDPOINT:
+                        continue
+                    raise
+
+            if q_data and isinstance(q_data.get("groups"), list) and q_data["groups"]:
+                quota_summary = dict(acc.quota_summary or {})
+                for g in q_data["groups"]:
+                    if not isinstance(g, dict):
+                        continue
+                    g_name = (g.get("displayName") or "").lower()
+                    buckets = g.get("buckets") or g.get("quotaBuckets") or []
+                    for b in buckets:
+                        if not isinstance(b, dict):
+                            continue
+                        bid = str(b.get("bucketId") or b.get("bucket") or b.get("id") or "").lower()
+                        rf = b.get("remainingFraction")
+                        pct = round(float(rf) * 100) if rf is not None else None
+                        rt = b.get("resetTime")
+                        if "gemini" in g_name or "gemini" in bid:
+                            if "weekly" in bid:
+                                quota_summary["gemini_weekly_pct"] = pct
+                                if rt:
+                                    quota_summary["gemini_reset_time"] = rt
+                            elif "5h" in bid:
+                                quota_summary["gemini_5h_pct"] = pct
+                        elif "claude" in g_name or "gpt" in g_name or "3p" in bid or "claude" in bid:
+                            if "weekly" in bid:
+                                quota_summary["claude_weekly_pct"] = pct
+                                if rt:
+                                    quota_summary["claude_reset_time"] = rt
+                            elif "5h" in bid:
+                                quota_summary["claude_5h_pct"] = pct
+
+                with self._lock:
+                    data = self._load_raw()
+                    raw_accs = data.get("accounts", {})
+                    if isinstance(raw_accs, dict) and target in raw_accs:
+                        raw_accs[target]["quota_summary"] = quota_summary
+                        data["accounts"] = raw_accs
+                        if data.get("active_account_email") == target:
+                            data["quota_summary"] = quota_summary
+                        self._save_raw(data)
+
+                return q_data
+        except Exception as e:
+            logger.debug("Live get_account_quota_buckets failed for %s: %s", target, e)
+
+        # Fallback to synthesized groups from cached quota_summary
+        if acc.quota_summary:
+            return self._synthesize_quota_groups(acc)
+        return {}
