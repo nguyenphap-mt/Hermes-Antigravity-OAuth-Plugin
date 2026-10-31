@@ -425,13 +425,44 @@
     var loadingAccounts = loadingAccountsState[0];
     var setLoadingAccounts = loadingAccountsState[1];
 
+    function synthesizeQuotaGroups(qs) {
+      if (!qs) return [];
+      var gPct = qs.gemini_weekly_pct;
+      var cPct = qs.claude_weekly_pct;
+      var groups = [];
+      if (gPct != null) {
+        var b1 = [{ displayName: "Weekly Limit Remaining", remainingFraction: gPct / 100.0, bucketId: "gemini_weekly" }];
+        if (qs.gemini_5h_pct != null) {
+          b1.push({ displayName: "Five Hour Limit Remaining", remainingFraction: qs.gemini_5h_pct / 100.0, bucketId: "gemini_5h" });
+        }
+        groups.push({ displayName: "Gemini Models", buckets: b1 });
+      }
+      if (cPct != null) {
+        var b2 = [{ displayName: "Weekly Limit Remaining", remainingFraction: cPct / 100.0, bucketId: "claude_weekly" }];
+        if (qs.claude_5h_pct != null) {
+          b2.push({ displayName: "Five Hour Limit Remaining", remainingFraction: qs.claude_5h_pct / 100.0, bucketId: "claude_5h" });
+        }
+        groups.push({ displayName: "Claude and GPT models", buckets: b2 });
+      }
+      return groups;
+    }
+
     var fetchQuotaForAccount = useCallback(function (targetEmail, forceRefresh) {
       if (!targetEmail) return;
       setQuotaLoading(true);
       var url = "/antigravity/quota?email=" + encodeURIComponent(targetEmail) + (forceRefresh ? "&refresh=true" : "");
       apiFetch(url).then(function (res) {
-        if (res.ok && res.summary) {
+        if (res.ok && res.summary && res.summary.groups && res.summary.groups.length > 0) {
           setQuota(res.summary);
+        } else {
+          setAccounts(function (latestAccs) {
+            var matched = latestAccs.find(function (a) { return a.email === targetEmail; });
+            if (matched && matched.quota_summary) {
+              var groups = synthesizeQuotaGroups(matched.quota_summary);
+              if (groups.length > 0) setQuota({ groups: groups });
+            }
+            return latestAccs;
+          });
         }
       }).catch(function (e) {
         console.debug("Fetch quota error for " + targetEmail + ":", e);
@@ -449,7 +480,16 @@
           setPoolInfo({ strategy: res.strategy, active_email: res.active_email, mode: res.mode });
           setSelectedEmail(function (prev) {
             var validPrev = prev && accs.some(function (a) { return a.email === prev; });
-            return validPrev ? prev : (res.active_email || (accs[0] ? accs[0].email : null));
+            var target = validPrev ? prev : (res.active_email || (accs[0] ? accs[0].email : null));
+            if (target) {
+              var targetAcc = accs.find(function (a) { return a.email === target; });
+              if (targetAcc && targetAcc.quota_summary) {
+                var groups = synthesizeQuotaGroups(targetAcc.quota_summary);
+                if (groups.length > 0) setQuota({ groups: groups });
+              }
+              fetchQuotaForAccount(target, false);
+            }
+            return target;
           });
         }
       }).catch(function (e) {
@@ -457,18 +497,13 @@
       }).finally(function () {
         setLoadingAccounts(false);
       });
-    }, []);
+    }, [fetchQuotaForAccount]);
 
     var loadModelsAndQuota = useCallback(function () {
       apiFetch("/antigravity/models").then(function (res) {
         if (res.ok) setModels(res.models || []);
       }).catch(function () {});
-
-      var target = selectedEmail || poolInfo.active_email;
-      if (target) {
-        fetchQuotaForAccount(target, false);
-      }
-    }, [selectedEmail, poolInfo.active_email, fetchQuotaForAccount]);
+    }, []);
 
     function handleSelectAccount(email) {
       if (!email) return;
@@ -476,23 +511,7 @@
       // Immediately preview local cached quota if available
       var matched = accounts.find(function (a) { return a.email === email; });
       if (matched && matched.quota_summary) {
-        var gPct = matched.quota_summary.gemini_weekly_pct;
-        var cPct = matched.quota_summary.claude_weekly_pct;
-        var groups = [];
-        if (gPct != null) {
-          var b1 = [{ displayName: "Weekly Limit Remaining", remainingFraction: gPct / 100.0, bucketId: "gemini_weekly" }];
-          if (matched.quota_summary.gemini_5h_pct != null) {
-            b1.push({ displayName: "Five Hour Limit Remaining", remainingFraction: matched.quota_summary.gemini_5h_pct / 100.0, bucketId: "gemini_5h" });
-          }
-          groups.push({ displayName: "Gemini Models", buckets: b1 });
-        }
-        if (cPct != null) {
-          var b2 = [{ displayName: "Weekly Limit Remaining", remainingFraction: cPct / 100.0, bucketId: "claude_weekly" }];
-          if (matched.quota_summary.claude_5h_pct != null) {
-            b2.push({ displayName: "Five Hour Limit Remaining", remainingFraction: matched.quota_summary.claude_5h_pct / 100.0, bucketId: "claude_5h" });
-          }
-          groups.push({ displayName: "Claude and GPT models", buckets: b2 });
-        }
+        var groups = synthesizeQuotaGroups(matched.quota_summary);
         if (groups.length > 0) {
           setQuota({ groups: groups });
         }
@@ -1090,6 +1109,10 @@
               ? h("span", { className: "ag-badge ag-badge-blue" }, "💎 " + (currentAccount.plan_name || "Google AI Pro"))
               : h("span", { className: "ag-badge ag-badge-neutral" }, "🌱 " + (currentAccount.plan_name || "Free Tier")));
 
+        var displayGroups = (quota && quota.groups && quota.groups.length > 0)
+          ? quota.groups
+          : (currentAccount.quota_summary ? synthesizeQuotaGroups(currentAccount.quota_summary) : []);
+
         return h("div", {
           className: "ag-card",
           id: "ag-quota-section",
@@ -1128,14 +1151,14 @@
             ]),
           ]),
 
-          quotaLoading
+          (quotaLoading && displayGroups.length === 0)
             ? h("div", { className: "py-10 text-center text-xs text-zinc-400" }, [
                 h(Icon, { name: "refresh", className: "w-5 h-5 animate-spin mx-auto mb-2 text-cyan-400" }),
                 h("span", null, "Đang kết nối Google Code Assist để lấy dữ liệu hạn mức của " + currentAccount.email + "..."),
               ])
-            : (quota && quota.groups && quota.groups.length > 0)
+            : displayGroups.length > 0
               ? h("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
-                  quota.groups.map(function (grp, idx) {
+                  displayGroups.map(function (grp, idx) {
                     return h("div", { key: idx, className: "ag-subcard" }, [
                       h("div", { className: "text-xs font-semibold text-zinc-200 mb-2 flex items-center justify-between" }, [
                         h("span", null, grp.displayName || "Group"),

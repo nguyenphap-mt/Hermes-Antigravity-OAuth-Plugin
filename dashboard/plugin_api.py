@@ -245,26 +245,53 @@ def _get_refresh_daemon():
 
 def _get_ag_auth_manager():
     try:
-        from bridge.auth import AntigravityAuthManager
+        from tools.antigravity_bridge.auth import AntigravityAuthManager
         return AntigravityAuthManager()
     except ImportError:
         try:
-            from tools.antigravity_bridge.auth import AntigravityAuthManager
+            from bridge.auth import AntigravityAuthManager
             return AntigravityAuthManager()
         except ImportError:
             raise HTTPException(status_code=500, detail="AntigravityAuthManager could not be imported.")
 
 
 def _get_ag_account_pool():
+    # Try canonical tools.antigravity_bridge with method check
+    try:
+        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+        if hasattr(AntigravityAccountPoolManager, "get_account_quota_buckets"):
+            return AntigravityAccountPoolManager()
+    except ImportError:
+        pass
+    # Try bridge with method check
     try:
         from bridge.account_pool import AntigravityAccountPoolManager
+        if hasattr(AntigravityAccountPoolManager, "get_account_quota_buckets"):
+            return AntigravityAccountPoolManager()
+    except ImportError:
+        pass
+    # Final fallback
+    try:
+        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
         return AntigravityAccountPoolManager()
     except ImportError:
         try:
-            from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+            from bridge.account_pool import AntigravityAccountPoolManager
             return AntigravityAccountPoolManager()
         except ImportError:
             raise HTTPException(status_code=500, detail="AntigravityAccountPoolManager could not be imported.")
+
+
+def _get_flow_account_pool():
+    try:
+        from bridge.flow.account_pool import FlowAccountPoolManager
+        return FlowAccountPoolManager()
+    except ImportError:
+        try:
+            from tools.antigravity_bridge.flow.account_pool import FlowAccountPoolManager
+            return FlowAccountPoolManager()
+        except ImportError:
+            raise HTTPException(status_code=500, detail="FlowAccountPoolManager could not be imported.")
 
 
 def _get_server_module():
@@ -859,14 +886,10 @@ async def set_flow_model(req: VideoModelSetRequest):
 async def get_flow_accounts():
     """List all accounts in the Google Flow multi-account pool."""
     try:
-        from bridge.flow.account_pool import FlowAccountPoolManager
-    except ImportError:
-        try:
-            from tools.antigravity_bridge.flow.account_pool import FlowAccountPoolManager
-        except ImportError:
-            return {"ok": True, "accounts": [], "active_id": "default"}
+        pool = _get_flow_account_pool()
+    except Exception:
+        return {"ok": True, "accounts": [], "active_id": "default"}
 
-    pool = FlowAccountPoolManager()
     accounts = pool.list_accounts()
     active = pool.get_active_account()
     res = [
@@ -887,8 +910,7 @@ async def get_flow_accounts():
 async def switch_flow_account(account_id: str = Query(...)):
     """Switch active Google Flow account."""
     try:
-        from bridge.flow.account_pool import FlowAccountPoolManager
-        pool = FlowAccountPoolManager()
+        pool = _get_flow_account_pool()
         pool.set_active_account(account_id)
         return {"ok": True, "message": f"Đã đổi tài khoản Google Flow sang: {account_id}"}
     except Exception as e:
@@ -899,8 +921,7 @@ async def switch_flow_account(account_id: str = Query(...)):
 async def remove_flow_account(account_id: str = Query(...)):
     """Remove an account from Google Flow pool."""
     try:
-        from bridge.flow.account_pool import FlowAccountPoolManager
-        pool = FlowAccountPoolManager()
+        pool = _get_flow_account_pool()
         if pool.remove_account(account_id):
             return {"ok": True, "message": f"Đã xóa tài khoản Flow: {account_id}"}
         raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found.")

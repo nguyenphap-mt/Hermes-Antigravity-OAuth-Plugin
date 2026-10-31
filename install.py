@@ -145,12 +145,17 @@ def main():
             if f.is_file():
                 shutil.copy2(f, plugin_dest / f.name)
 
-        # Bridge runtime engine
+        # Bridge runtime engine (sync both tools/antigravity_bridge and legacy bridge/ paths)
         bridge_dest = h / "bridge" / "antigravity" / "tools" / "antigravity_bridge"
         bridge_dest.parent.mkdir(parents=True, exist_ok=True)
         if bridge_dest.exists():
             shutil.rmtree(bridge_dest, ignore_errors=True)
         shutil.copytree(bridge_src, bridge_dest)
+
+        legacy_bridge_dest = h / "bridge" / "antigravity" / "bridge"
+        if legacy_bridge_dest.exists():
+            shutil.rmtree(legacy_bridge_dest, ignore_errors=True)
+        shutil.copytree(bridge_src, legacy_bridge_dest)
 
         # Manager CLI
         shutil.copy2(PACKAGE_DIR / "manage.py", h / "bridge" / "antigravity" / "manage.py")
