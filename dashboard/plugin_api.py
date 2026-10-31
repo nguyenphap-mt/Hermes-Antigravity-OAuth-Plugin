@@ -113,6 +113,9 @@ class AccountItem(BaseModel):
     is_active: bool = False
     cooldown_seconds: int = 0
     usage_count: int = 0
+    plan_name: str = "Free Tier"
+    plan_type: str = "free"  # "ultra" | "pro" | "free"
+    quota_summary: Optional[Dict[str, Any]] = None
 
 
 class AccountPoolResponse(BaseModel):
@@ -241,11 +244,11 @@ def _get_refresh_daemon():
 
 def _get_ag_auth_manager():
     try:
-        from tools.antigravity_bridge.auth import AntigravityAuthManager
+        from bridge.auth import AntigravityAuthManager
         return AntigravityAuthManager()
     except ImportError:
         try:
-            from bridge.auth import AntigravityAuthManager
+            from tools.antigravity_bridge.auth import AntigravityAuthManager
             return AntigravityAuthManager()
         except ImportError:
             raise HTTPException(status_code=500, detail="AntigravityAuthManager could not be imported.")
@@ -253,11 +256,11 @@ def _get_ag_auth_manager():
 
 def _get_ag_account_pool():
     try:
-        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
+        from bridge.account_pool import AntigravityAccountPoolManager
         return AntigravityAccountPoolManager()
     except ImportError:
         try:
-            from bridge.account_pool import AntigravityAccountPoolManager
+            from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
             return AntigravityAccountPoolManager()
         except ImportError:
             raise HTTPException(status_code=500, detail="AntigravityAccountPoolManager could not be imported.")
@@ -407,6 +410,9 @@ async def get_accounts():
         cd = max(0, int(acc.exhausted_until - now)) if acc.exhausted_until else 0
         role = getattr(acc, "role", getattr(acc, "assigned_role", "all"))
         usage_count = getattr(acc, "request_count", getattr(acc, "total_requests", 0))
+        plan_name = getattr(acc, "plan_name", "") or "Free Tier"
+        plan_type = getattr(acc, "computed_plan_type", getattr(acc, "plan_type", "free")) or "free"
+        quota_summary = getattr(acc, "quota_summary", None) or None
         items.append(AccountItem(
             email=acc.email,
             role=role,
@@ -418,6 +424,9 @@ async def get_accounts():
             is_active=bool(active and active.email == acc.email),
             cooldown_seconds=cd,
             usage_count=usage_count,
+            plan_name=plan_name,
+            plan_type=plan_type,
+            quota_summary=quota_summary,
         ))
 
     items.sort(
@@ -528,6 +537,42 @@ async def check_account_unlock(req: AccountActionRequest):
 
     res = await loop.run_in_executor(None, auth_mgr.probe_account_unlock_status, target)
     return res
+
+
+@router.post("/accounts/refresh-plan-quota")
+async def refresh_plan_quota(req: Optional[AccountActionRequest] = None):
+    """Live-query Google Code Assist for Plan (Ultra/Pro/Free) and Quota telemetry.
+    If req is omitted or req.email is 'all' / empty, refreshes all active/available accounts in the pool.
+    """
+    pool = _get_ag_account_pool()
+    target = (req.email.strip().lower() if (req and req.email) else "all")
+    loop = asyncio.get_event_loop()
+
+    if target == "all" or not target:
+        accounts = pool.list_accounts()
+        candidates = [a.email for a in accounts if a.status != "disabled"]
+        if not candidates and accounts:
+            candidates = [accounts[0].email]
+        if not candidates:
+            return {"ok": False, "message": "Không có tài khoản nào trong pool để làm mới."}
+
+        results = []
+        for em in candidates:
+            r = await loop.run_in_executor(None, pool.refresh_account_plan_and_quota, em)
+            results.append(r)
+
+        updated_plans = [f"{r['email']}: {r.get('plan_name', 'Free Tier')}" for r in results if r.get("ok")]
+        return {
+            "ok": True,
+            "refreshed_count": len(results),
+            "results": results,
+            "message": f"Đã quét và cập nhật gói & quota cho {len(results)} tài khoản: {', '.join(updated_plans)}",
+        }
+    else:
+        res = await loop.run_in_executor(None, pool.refresh_account_plan_and_quota, target)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("message", "Quét plan/quota thất bại."))
+        return res
 
 
 _PKCE_SESSIONS: Dict[str, Dict[str, Any]] = {}

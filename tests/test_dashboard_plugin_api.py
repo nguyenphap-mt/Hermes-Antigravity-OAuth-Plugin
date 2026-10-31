@@ -46,6 +46,14 @@ class TestDashboardPluginAPI:
         assert "window.__HERMES_PLUGINS__.register(\"antigravity\"" in js_content
         assert "registerSlot(\"settings:providers\"" in js_content
         assert "AntigravityCockpit" in js_content
+        assert "ag-badge-purple" in js_content
+        assert "ag-quota-bar-wrap" in js_content
+        assert "refresh-plan-quota" in js_content
+
+        css_content = css_file.read_text(encoding="utf-8")
+        assert ".ag-badge-purple" in css_content
+        assert ".ag-badge-blue" in css_content
+        assert ".ag-quota-bar-wrap" in css_content
 
     def test_daemon_status_endpoint(self, client):
         resp = client.get("/api/plugins/antigravity/daemon/status")
@@ -131,3 +139,19 @@ class TestDashboardPluginAPI:
         assert data["ok"] is True
         assert "lines" in data
         assert "total_lines" in data
+
+    def test_accounts_plan_quota_fields(self, client):
+        resp = client.get("/api/plugins/antigravity/accounts")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        for acc in data["accounts"]:
+            assert "plan_name" in acc
+            assert "plan_type" in acc
+            assert "quota_summary" in acc
+            assert acc["plan_type"] in {"ultra", "pro", "free"}
+
+    def test_refresh_plan_quota_endpoint(self, client):
+        resp = client.post("/api/plugins/antigravity/accounts/refresh-plan-quota", json={"email": "nonexistent@example.com"})
+        assert resp.status_code in {200, 400}
+

@@ -73,6 +73,22 @@ class AntigravityAccount:
     assigned_role: str = "all"              # 'all', 'llm', 'image_gen'
     total_requests: int = 0                  # Cumulative request count
     failure_count: int = 0                   # Consecutive failure count
+    plan_name: str = ""                     # 'Google AI Ultra', 'Google AI Pro', 'Free Tier'
+    plan_type: str = "free"                 # 'ultra', 'pro', 'free'
+    quota_summary: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def computed_plan_type(self) -> str:
+        """Normalized plan tier: 'ultra' | 'pro' | 'free'."""
+        if self.plan_type in {"ultra", "pro", "free"}:
+            return self.plan_type
+        name = (self.plan_name or "").lower()
+        tier = (self.tier_id or "").lower()
+        if "ultra" in name or "ultra" in tier:
+            return "ultra"
+        if "pro" in name or "pro" in tier:
+            return "pro"
+        return "free"
 
     @property
     def role(self) -> str:
@@ -144,6 +160,9 @@ class AntigravityAccount:
             assigned_role=str(data.get("assigned_role", "all")),
             total_requests=int(data.get("total_requests", 0)),
             failure_count=int(data.get("failure_count", 0)),
+            plan_name=str(data.get("plan_name", "") or ""),
+            plan_type=str(data.get("plan_type", "free") or "free"),
+            quota_summary=dict(data.get("quota_summary", {}) or {}) if isinstance(data.get("quota_summary"), dict) else {},
         )
 
 
@@ -406,7 +425,11 @@ class AntigravityAccountPoolManager:
             acct_data = raw_accs[target]
 
             # Sync root keys for backward compatibility
-            for k in ["access_token", "refresh_token", "expires_at", "email", "project_id", "managed_project_id", "tier_id", "source"]:
+            for k in [
+                "access_token", "refresh_token", "expires_at", "email",
+                "project_id", "managed_project_id", "tier_id", "source",
+                "plan_name", "plan_type", "quota_summary"
+            ]:
                 if k in acct_data:
                     data[k] = acct_data[k]
 
@@ -617,6 +640,12 @@ class AntigravityAccountPoolManager:
                     acc.managed_project_id = old["managed_project_id"]
                 if not acc.tier_id and old.get("tier_id"):
                     acc.tier_id = old["tier_id"]
+                if not acc.plan_name and old.get("plan_name"):
+                    acc.plan_name = old["plan_name"]
+                if (not acc.plan_type or acc.plan_type == "free") and old.get("plan_type"):
+                    acc.plan_type = old["plan_type"]
+                if not acc.quota_summary and old.get("quota_summary"):
+                    acc.quota_summary = old["quota_summary"]
                 if not acc.project_id or acc.project_id == "aicode-consumers":
                     if acc.managed_project_id and acc.managed_project_id != "aicode-consumers":
                         acc.project_id = acc.managed_project_id
@@ -644,11 +673,15 @@ class AntigravityAccountPoolManager:
             # Sync root keys if active
             if data.get("active_account_email") == acc.email:
                 for k, v in acc.to_dict().items():
-                    if k in {"access_token", "refresh_token", "expires_at", "email", "project_id", "managed_project_id", "tier_id", "source"}:
+                    if k in {
+                        "access_token", "refresh_token", "expires_at", "email",
+                        "project_id", "managed_project_id", "tier_id", "source",
+                        "plan_name", "plan_type", "quota_summary"
+                    }:
                         data[k] = v
 
             self._save_raw(data)
-            logger.info("Saved account '%s' to Antigravity account pool (status=%s).", acc.email, acc.status)
+            logger.info("Saved account '%s' to Antigravity account pool (status=%s, plan=%s).", acc.email, acc.status, acc.plan_name or "free")
             return acc
 
     def remove_account(self, email: str) -> bool:
@@ -673,3 +706,203 @@ class AntigravityAccountPoolManager:
             self._save_raw(data)
             logger.info("Removed account '%s' from Antigravity account pool.", target)
             return True
+
+    def refresh_account_plan_and_quota(self, email: str) -> Dict[str, Any]:
+        """Fetch live Plan name (Ultra/Pro/Free) and Quota telemetry for an account from Google Code Assist."""
+        target = (email or "").strip().lower()
+        if not target:
+            return {"ok": False, "email": "", "message": "Email tài khoản không hợp lệ."}
+
+        acc = self.get_account(target)
+        if not acc:
+            return {"ok": False, "email": target, "message": f"Không tìm thấy tài khoản '{target}' trong pool."}
+
+        try:
+            from bridge.auth import (
+                AntigravityAuthManager,
+                AntigravityCredentials,
+                LOAD_CODE_ASSIST_ENDPOINT,
+                FALLBACK_LOAD_CODE_ASSIST_ENDPOINT,
+            )
+            from bridge.fingerprint import AntigravityFingerprint
+            from bridge.models import QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT
+        except ImportError:
+            from tools.antigravity_bridge.auth import (
+                AntigravityAuthManager,
+                AntigravityCredentials,
+                LOAD_CODE_ASSIST_ENDPOINT,
+                FALLBACK_LOAD_CODE_ASSIST_ENDPOINT,
+            )
+            from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+            from tools.antigravity_bridge.models import QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT
+
+        auth_mgr = AntigravityAuthManager(auth_file=self.storage_path)
+        creds = AntigravityCredentials(
+            access_token=acc.access_token,
+            refresh_token=acc.refresh_token,
+            expires_at=acc.expires_at,
+            email=acc.email,
+            project_id=acc.project_id,
+            managed_project_id=acc.managed_project_id,
+            tier_id=acc.tier_id,
+            source=acc.source,
+            plan_name=acc.plan_name,
+        )
+
+        if creds.is_expired and creds.refresh_token:
+            try:
+                creds = auth_mgr.refresh_access_token(creds)
+                acc.access_token = creds.access_token
+                acc.expires_at = creds.expires_at
+            except Exception as e:
+                logger.warning("Token refresh failed during plan check for %s: %s", target, e)
+                return {
+                    "ok": False,
+                    "email": target,
+                    "plan_name": acc.plan_name or "Free Tier",
+                    "plan_type": acc.computed_plan_type,
+                    "quota_summary": acc.quota_summary,
+                    "message": f"Không thể làm mới token cho {target}: {e}",
+                }
+
+        import urllib.request
+        import urllib.error
+        import gzip
+
+        headers = AntigravityFingerprint.build_headers(creds.access_token)
+        metadata = AntigravityFingerprint.build_client_metadata()
+
+        plan_name = acc.plan_name or "Free Tier"
+        plan_type = acc.computed_plan_type
+        pid = acc.effective_project_id
+
+        # 1. Query loadCodeAssist
+        try:
+            load_body = json.dumps({"metadata": metadata}).encode("utf-8")
+            data: Dict[str, Any] = {}
+            for ep in (LOAD_CODE_ASSIST_ENDPOINT, FALLBACK_LOAD_CODE_ASSIST_ENDPOINT):
+                try:
+                    req = urllib.request.Request(ep, data=load_body, headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=10.0) as resp:
+                        raw = resp.read()
+                        if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                            raw = gzip.decompress(raw)
+                        data = json.loads(raw.decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as he:
+                    if he.code in {404, 500, 502, 503, 504} and ep == LOAD_CODE_ASSIST_ENDPOINT:
+                        continue
+                    raise
+
+            if data:
+                paid_tier = data.get("paidTier")
+                current_tier = data.get("currentTier")
+                if isinstance(paid_tier, dict) and paid_tier.get("name"):
+                    plan_name = str(paid_tier.get("name"))
+                    p_id = str(paid_tier.get("id") or "").lower()
+                    if "ultra" in plan_name.lower() or "ultra" in p_id:
+                        plan_type = "ultra"
+                    elif "pro" in plan_name.lower() or "pro" in p_id:
+                        plan_type = "pro"
+                    else:
+                        plan_type = "pro"
+                elif isinstance(current_tier, dict):
+                    c_name = str(current_tier.get("name") or "")
+                    c_id = str(current_tier.get("id") or "").lower()
+                    if "ultra" in c_name.lower() or "ultra" in c_id:
+                        plan_type = "ultra"
+                        plan_name = c_name or "Google AI Ultra"
+                    elif "pro" in c_name.lower() or "pro" in c_id:
+                        plan_type = "pro"
+                        plan_name = c_name or "Google AI Pro"
+                    else:
+                        plan_type = "free"
+                        plan_name = "Free Tier" if ("free" in c_id or "antigravity" in c_name.lower()) else (c_name or "Free Tier")
+                else:
+                    plan_type = "free"
+                    plan_name = "Free Tier"
+
+                extracted_pid = auth_mgr._extract_companion_project_id(data)
+                if extracted_pid:
+                    pid = extracted_pid
+        except Exception as e:
+            logger.debug("loadCodeAssist failed for %s during plan refresh: %s", target, e)
+
+        # 2. Query retrieveUserQuotaSummary
+        quota_summary = dict(acc.quota_summary or {})
+        try:
+            q_headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=pid)
+            q_body = json.dumps({"project": pid}).encode("utf-8")
+            q_data: Dict[str, Any] = {}
+            for ep in (QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT):
+                try:
+                    q_req = urllib.request.Request(ep, data=q_body, headers=q_headers, method="POST")
+                    with urllib.request.urlopen(q_req, timeout=10.0) as resp:
+                        raw = resp.read()
+                        if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                            raw = gzip.decompress(raw)
+                        q_data = json.loads(raw.decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as he:
+                    if he.code in {404, 500, 502, 503, 504} and ep == QUOTA_ENDPOINT:
+                        continue
+                    raise
+
+            if q_data and isinstance(q_data.get("groups"), list):
+                for g in q_data["groups"]:
+                    if not isinstance(g, dict):
+                        continue
+                    g_name = (g.get("displayName") or "").lower()
+                    buckets = g.get("buckets") or g.get("quotaBuckets") or []
+                    for b in buckets:
+                        if not isinstance(b, dict):
+                            continue
+                        bid = str(b.get("bucketId") or b.get("bucket") or b.get("id") or "").lower()
+                        rf = b.get("remainingFraction")
+                        pct = round(float(rf) * 100) if rf is not None else None
+                        rt = b.get("resetTime")
+                        if "gemini" in g_name or "gemini" in bid:
+                            if "weekly" in bid:
+                                quota_summary["gemini_weekly_pct"] = pct
+                                if rt:
+                                    quota_summary["gemini_reset_time"] = rt
+                            elif "5h" in bid:
+                                quota_summary["gemini_5h_pct"] = pct
+                        elif "claude" in g_name or "gpt" in g_name or "3p" in bid or "claude" in bid:
+                            if "weekly" in bid:
+                                quota_summary["claude_weekly_pct"] = pct
+                                if rt:
+                                    quota_summary["claude_reset_time"] = rt
+                            elif "5h" in bid:
+                                quota_summary["claude_5h_pct"] = pct
+        except Exception as e:
+            logger.debug("retrieveUserQuotaSummary failed for %s during quota refresh: %s", target, e)
+
+        # 3. Save to account and persist
+        with self._lock:
+            data = self._load_raw()
+            raw_accs = data.get("accounts", {})
+            if isinstance(raw_accs, dict) and target in raw_accs:
+                raw_accs[target]["plan_name"] = plan_name
+                raw_accs[target]["plan_type"] = plan_type
+                raw_accs[target]["quota_summary"] = quota_summary
+                if pid and pid != "aicode-consumers":
+                    raw_accs[target]["managed_project_id"] = pid
+                    raw_accs[target]["project_id"] = pid
+                data["accounts"] = raw_accs
+
+                if data.get("active_account_email") == target:
+                    data["plan_name"] = plan_name
+                    data["plan_type"] = plan_type
+                    data["quota_summary"] = quota_summary
+
+                self._save_raw(data)
+
+        return {
+            "ok": True,
+            "email": target,
+            "plan_name": plan_name,
+            "plan_type": plan_type,
+            "quota_summary": quota_summary,
+            "message": f"Đã cập nhật gói {plan_name} ({plan_type.upper()}) và hạn mức quota cho {target}.",
+        }

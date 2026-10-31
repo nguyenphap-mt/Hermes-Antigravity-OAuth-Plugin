@@ -527,6 +527,30 @@
         });
     }
 
+    var refreshingPlanQuotaState = useState(false);
+    var refreshingPlanQuota = refreshingPlanQuotaState[0];
+    var setRefreshingPlanQuota = refreshingPlanQuotaState[1];
+
+    function handleRefreshPlanQuota(email) {
+      setRefreshingPlanQuota(true);
+      apiFetch("/accounts/refresh-plan-quota", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email || "all" }),
+      })
+        .then(function (res) {
+          notify(res.message || "Đã cập nhật gói và hạn mức quota!", "success");
+          loadAccounts();
+          loadModelsAndQuota();
+        })
+        .catch(function (e) {
+          notify("Lỗi quét plan & quota: " + e.message, "error");
+        })
+        .finally(function () {
+          setRefreshingPlanQuota(false);
+        });
+    }
+
     var oauthModalState = useState(null);
     var oauthModal = oauthModalState[0];
     var setOauthModal = oauthModalState[1];
@@ -791,6 +815,16 @@
             ]),
 
             h("button", {
+              disabled: refreshingPlanQuota,
+              onClick: function () { handleRefreshPlanQuota("all"); },
+              className: "ag-btn ag-btn-secondary",
+              title: "Quét thông tin gói Google AI (Ultra/Pro/Free) và hạn mức quota thời gian thực",
+            }, [
+              h(Icon, { name: "refresh", className: "w-3.5 h-3.5 " + (refreshingPlanQuota ? "animate-spin" : "") }),
+              h("span", null, refreshingPlanQuota ? "Đang quét..." : "Quét Plan & Quota"),
+            ]),
+
+            h("button", {
               onClick: handleAddAccount,
               className: "ag-btn ag-btn-primary",
             }, [
@@ -814,6 +848,21 @@
                 var avatarCls = "ag-avatar " +
                   (isDisabled ? "ag-avatar-disabled" : (acc.is_active ? "ag-avatar-active" : "ag-avatar-ready"));
 
+                var planType = (acc.plan_type || "").toLowerCase();
+                var planName = acc.plan_name || "";
+                if (!planType || planType === "free") {
+                  if (planName.toLowerCase().indexOf("ultra") !== -1) planType = "ultra";
+                  else if (planName.toLowerCase().indexOf("pro") !== -1) planType = "pro";
+                }
+                var planBadgeCls = planType === "ultra"
+                  ? "ag-badge ag-badge-purple"
+                  : (planType === "pro" ? "ag-badge ag-badge-blue" : "ag-badge ag-badge-neutral");
+                var planLabel = planType === "ultra"
+                  ? ("⚡ " + (planName || "Google AI Ultra"))
+                  : (planType === "pro"
+                      ? ("💎 " + (planName || "Google AI Pro"))
+                      : ("🌱 " + (planName || "Free Tier")));
+
                 return h("div", {
                   key: acc.email,
                   className: cardCls,
@@ -832,15 +881,19 @@
                       }, "ACTIVE"),
                     ]),
 
-                    // Role and Status tags
+                    // Plan, Role, and Status tags
                     h("div", { className: "flex flex-wrap items-center gap-1.5" }, [
+                      h("span", {
+                        className: planBadgeCls,
+                        title: "Gói Google AI: " + (planName || "Free Tier"),
+                      }, planLabel),
                       h("span", {
                         className: "ag-badge ag-badge-neutral",
                       }, "Role: " + (acc.role || "all").toUpperCase()),
                       isDisabled
                         ? h("span", {
                             className: "ag-badge ag-badge-red",
-                          }, "BỊ KHÓA (DISABLED)")
+                          }, "BỊ KHÓA")
                         : isCooling
                           ? h("span", {
                               className: "ag-badge ag-badge-amber",
@@ -852,6 +905,36 @@
                         className: "ag-badge ag-badge-neutral",
                         style: { marginLeft: "auto" },
                       }, (acc.usage_count || 0) + " reqs"),
+                    ]),
+
+                    // Mini Quota Telemetry (if available)
+                    acc.quota_summary && (acc.quota_summary.gemini_weekly_pct != null || acc.quota_summary.claude_weekly_pct != null) && h("div", {
+                      className: "ag-quota-bar-wrap",
+                    }, [
+                      acc.quota_summary.gemini_weekly_pct != null && h("div", { className: "space-y-1" }, [
+                        h("div", { className: "ag-quota-row" }, [
+                          h("span", null, "Gemini (Tuần)"),
+                          h("span", { style: { color: acc.quota_summary.gemini_weekly_pct > 20 ? "#34d399" : "#f87171", fontWeight: "bold" } }, acc.quota_summary.gemini_weekly_pct + "% còn lại"),
+                        ]),
+                        h("div", { className: "ag-quota-progress" }, [
+                          h("div", {
+                            className: "ag-quota-fill ag-quota-fill-gemini",
+                            style: { width: Math.min(100, Math.max(0, acc.quota_summary.gemini_weekly_pct)) + "%" },
+                          }),
+                        ]),
+                      ]),
+                      acc.quota_summary.claude_weekly_pct != null && h("div", { className: "space-y-1" }, [
+                        h("div", { className: "ag-quota-row" }, [
+                          h("span", null, "Claude & GPT (Tuần)"),
+                          h("span", { style: { color: acc.quota_summary.claude_weekly_pct > 20 ? "#c084fc" : "#f87171", fontWeight: "bold" } }, acc.quota_summary.claude_weekly_pct + "% còn lại"),
+                        ]),
+                        h("div", { className: "ag-quota-progress" }, [
+                          h("div", {
+                            className: "ag-quota-fill ag-quota-fill-claude",
+                            style: { width: Math.min(100, Math.max(0, acc.quota_summary.claude_weekly_pct)) + "%" },
+                          }),
+                        ]),
+                      ]),
                     ]),
                   ]),
 
@@ -880,6 +963,13 @@
                       className: "ag-btn ag-btn-secondary ag-btn-sm",
                       title: "Mở biểu mẫu kháng nghị chính thức của Google Antigravity",
                     }, "Kháng nghị ↗"),
+                    h("button", {
+                      disabled: refreshingPlanQuota,
+                      onClick: function () { handleRefreshPlanQuota(acc.email); },
+                      className: "ag-btn ag-btn-secondary ag-btn-icon",
+                      style: { width: "28px", height: "28px", borderRadius: "8px" },
+                      title: "Quét lại Plan & Quota của tài khoản này",
+                    }, h(Icon, { name: "refresh", className: "w-3.5 h-3.5 " + (refreshingPlanQuota ? "animate-spin" : "") })),
                     h("select", {
                       value: acc.role,
                       onChange: function (e) { handleRole(acc.email, e.target.value); },

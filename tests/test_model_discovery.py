@@ -8,6 +8,9 @@ _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+_HERMES_AGENT = _REPO_ROOT.parent / "hermes-agent"
+if _HERMES_AGENT.is_dir() and str(_HERMES_AGENT) not in sys.path:
+    sys.path.insert(0, str(_HERMES_AGENT))
 
 import pytest
 

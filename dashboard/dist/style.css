@@ -257,6 +257,65 @@
   border: 1px solid #27272a !important;
 }
 
+.ag-badge-purple {
+  background: rgba(139, 92, 246, 0.16) !important;
+  color: #c084fc !important;
+  border: 1px solid rgba(168, 85, 247, 0.45) !important;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.2) !important;
+}
+
+.ag-badge-blue {
+  background: rgba(59, 130, 246, 0.16) !important;
+  color: #60a5fa !important;
+  border: 1px solid rgba(59, 130, 246, 0.45) !important;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.15) !important;
+}
+
+/* Mini Quota Telemetry on Account Cards */
+.ag-quota-bar-wrap {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+  margin-top: 10px !important;
+  padding: 8px 10px !important;
+  background: rgba(10, 14, 22, 0.5) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  border-radius: 8px !important;
+}
+
+.ag-quota-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  font-size: 10.5px !important;
+  font-family: "Geist Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  color: #94a3b8 !important;
+}
+
+.ag-quota-progress {
+  width: 100% !important;
+  height: 4px !important;
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-radius: 2px !important;
+  overflow: hidden !important;
+}
+
+.ag-quota-fill {
+  height: 100% !important;
+  border-radius: 2px !important;
+  transition: width 0.3s ease !important;
+}
+
+.ag-quota-fill-gemini {
+  background: linear-gradient(90deg, #10b981 0%, #06b6d4 100%) !important;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.4) !important;
+}
+
+.ag-quota-fill-claude {
+  background: linear-gradient(90deg, #a855f7 0%, #ec4899 100%) !important;
+  box-shadow: 0 0 6px rgba(168, 85, 247, 0.4) !important;
+}
+
 .ag-avatar {
   width: 36px !important;
   height: 36px !important;

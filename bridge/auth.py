@@ -100,6 +100,7 @@ class AntigravityCredentials:
     managed_project_id: str = ""
     tier_id: str = ""
     source: str = "oauth_pkce"
+    plan_name: str = ""
 
     @property
     def effective_project_id(self) -> str:
@@ -129,6 +130,7 @@ class AntigravityCredentials:
             "managed_project_id": self.managed_project_id,
             "tier_id": self.tier_id,
             "source": self.source,
+            "plan_name": self.plan_name,
             "updated_at": time.time(),
         }
 
@@ -143,6 +145,7 @@ class AntigravityCredentials:
             managed_project_id=data.get("managed_project_id") or "",
             tier_id=data.get("tier_id") or "",
             source=data.get("source") or "stored",
+            plan_name=str(data.get("plan_name") or ""),
         )
 
 
@@ -632,14 +635,23 @@ class AntigravityAuthManager:
                         continue
                     raise
 
+            paid_tier = data.get("paidTier")
             current_tier = data.get("currentTier")
             tier_id = ""
-            if isinstance(current_tier, dict):
-                tier_id = str(current_tier.get("id") or "")
+            plan_name = ""
+            if isinstance(paid_tier, dict) and paid_tier.get("name"):
+                plan_name = str(paid_tier.get("name"))
+                tier_id = str(paid_tier.get("id") or "")
+            if not plan_name and isinstance(current_tier, dict):
+                plan_name = str(current_tier.get("name") or "")
+                if not tier_id:
+                    tier_id = str(current_tier.get("id") or "")
             if not tier_id:
                 tier_id = str(data.get("tierId") or "")
             if tier_id:
                 creds.tier_id = tier_id
+            if plan_name:
+                creds.plan_name = plan_name
 
             pid = self._extract_companion_project_id(data)
             if not pid or not current_tier:
@@ -794,10 +806,17 @@ class AntigravityAuthManager:
                     raw_bytes = gzip.decompress(raw_bytes)
                 data = json.loads(raw_bytes.decode("utf-8"))
 
+            paid_tier = data.get("paidTier")
             current_tier = data.get("currentTier")
             tier_id = ""
-            if isinstance(current_tier, dict):
-                tier_id = str(current_tier.get("id") or "")
+            plan_name = ""
+            if isinstance(paid_tier, dict) and paid_tier.get("name"):
+                plan_name = str(paid_tier.get("name"))
+                tier_id = str(paid_tier.get("id") or "")
+            if not plan_name and isinstance(current_tier, dict):
+                plan_name = str(current_tier.get("name") or "")
+                if not tier_id:
+                    tier_id = str(current_tier.get("id") or "")
             if not tier_id:
                 tier_id = str(data.get("tierId") or "")
             pid = self._extract_companion_project_id(data) or creds.effective_project_id or DEFAULT_PROJECT_ID
@@ -806,6 +825,8 @@ class AntigravityAuthManager:
             creds.managed_project_id = pid
             if tier_id:
                 creds.tier_id = tier_id
+            if plan_name:
+                creds.plan_name = plan_name
 
             self.save_credentials(creds, reset_status=True)
             pool.add_or_update_account(creds, reset_status=True)
