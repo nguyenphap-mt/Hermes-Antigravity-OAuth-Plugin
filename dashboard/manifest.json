@@ -3,7 +3,7 @@
   "label": "Antigravity Suite",
   "description": "Cockpit quản trị Google Antigravity OAuth, 32+ Models, Sinh ảnh và Google Flow Veo 3.1 AI Video",
   "icon": "Zap",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "tab": {
     "path": "/antigravity",
     "position": "after:accounts"
