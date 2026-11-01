@@ -179,6 +179,14 @@ def test_scrape_models_and_tier_from_html_detects_gemini_argon():
     assert model_ids["gemini-web-argon"]["hex_id"] == "9d8ca3786ebdfbea"
     assert model_ids["gemini-web-argon"]["label"] == "Gemini Argon"
 
+    # Verify dynamic auto-discovery of unseen future models from WIZ_global_data HTML
+    future_html = '<script>["f1e2d3c4b5a69788", "5.0 Ultra"]</script>'
+    future_scraped = scrape_models_and_tier_from_html(future_html)
+    future_ids = {m["id"]: m for m in future_scraped["models"]}
+    assert "gemini-web-5.0-ultra" in future_ids
+    assert future_ids["gemini-web-5.0-ultra"]["hex_id"] == "f1e2d3c4b5a69788"
+    assert resolve_gemini_web_model("gemini-web-5.0-ultra") == "gemini-web-5.0-ultra"
+
 
 def test_build_model_selector_header():
     hdr = build_model_selector_header("gemini-web-argon")

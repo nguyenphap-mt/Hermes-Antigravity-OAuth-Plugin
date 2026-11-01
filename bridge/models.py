@@ -1093,9 +1093,44 @@ class ModelDiscoveryManager:
         """Return parsed DiscoveredModel objects."""
         raw_models = dict(self.fetch_models(force_refresh=force_refresh) or {})
         if isinstance(getattr(self.auth_manager, "auth_file", None), Path):
+            # 1. Dynamically synthesize gemini-web-* models from live Google API (fetchAvailableModels)
+            live_snapshot = list(raw_models.items())
+            for live_id, live_meta in live_snapshot:
+                if not isinstance(live_meta, dict) or not live_id.startswith("gemini-"):
+                    continue
+                if live_id.startswith("gemini-web-") or live_id.endswith("-image") or "customtools" in live_id:
+                    continue
+                suffix = live_id[len("gemini-"):]
+                web_id = f"gemini-web-{suffix}"
+                live_disp = str(live_meta.get("displayName") or suffix.replace("-", " ").title()).strip()
+                if web_id not in raw_models:
+                    raw_models[web_id] = {
+                        **live_meta,
+                        "displayName": f"{live_disp} (Web App)" if "(Web App)" not in live_disp else live_disp,
+                        "model": f"MODEL_{web_id.upper().replace('-', '_').replace('.', '_')}",
+                        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+                    }
+                # Also synthesize base model alias without -high/-medium/-low if not present
+                for tier_suffix in ("-high", "-medium", "-low"):
+                    if suffix.endswith(tier_suffix):
+                        base_suffix = suffix[: -len(tier_suffix)]
+                        base_web_id = f"gemini-web-{base_suffix}"
+                        if base_web_id not in raw_models:
+                            base_disp = re.sub(r"\s*\((?:High|Medium|Low)\)\s*$", "", live_disp, flags=re.IGNORECASE).strip()
+                            raw_models[base_web_id] = {
+                                **live_meta,
+                                "displayName": f"{base_disp} (Web App)" if "(Web App)" not in base_disp else base_disp,
+                                "model": f"MODEL_{base_web_id.upper().replace('-', '_').replace('.', '_')}",
+                                "apiProvider": "API_PROVIDER_GEMINI_WEB",
+                            }
+                        break
+
+            # 2. Merge baseline gemini-web-* models (ensuring Web App-exclusive models like 3.1 Pro are always present)
             for k, v in BASELINE_MODELS.items():
                 if k.startswith("gemini-web-") and k not in raw_models:
                     raw_models[k] = v
+
+            # 3. Merge live-scraped models from gemini_web_pool.json (WIZ_global_data HTML scraper)
             try:
                 pool_file = get_hermes_dir() / "gemini_web_pool.json"
                 if pool_file.is_file():
@@ -1105,9 +1140,10 @@ class ModelDiscoveryManager:
                         for m_item in (node.get("available_models") or []) if isinstance(node, dict) else []:
                             if isinstance(m_item, dict) and m_item.get("id"):
                                 mid = str(m_item["id"]).strip()
+                                mlabel = str(m_item.get("display_name") or m_item.get("label") or mid).strip()
                                 if mid.startswith("gemini-web-") and mid not in raw_models:
                                     raw_models[mid] = {
-                                        "displayName": m_item.get("display_name") or mid,
+                                        "displayName": f"Gemini {mlabel} (Web App)" if not mlabel.lower().startswith("gemini") else mlabel,
                                         "supportsImages": True,
                                         "supportsThinking": "lite" not in mid,
                                         "thinkingBudget": -1,

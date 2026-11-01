@@ -332,7 +332,7 @@ def is_explicit_gemini_web_model(model_name: str) -> bool:
 
 
 def resolve_gemini_web_model(model_name: str) -> str:
-    """Normalize any model identifier into a canonical GEMINI_WEB_MODELS key."""
+    """Normalize any model identifier into a canonical GEMINI_WEB_MODELS key or dynamic gemini-web-* ID."""
     if not model_name:
         return "gemini-web-4-argon"
     norm = model_name.strip().lower()
@@ -341,6 +341,9 @@ def resolve_gemini_web_model(model_name: str) -> str:
     if norm in GEMINI_WEB_ALIASES:
         return GEMINI_WEB_ALIASES[norm]
     if norm in GEMINI_WEB_MODELS:
+        return norm
+    # Preserve any explicit dynamic gemini-web-* model ID (e.g. gemini-web-3.1-flash-lite, gemini-web-4.5-pro)
+    if norm.startswith("gemini-web-") and len(norm) > len("gemini-web-"):
         return norm
     # Map standard Gemini models for web_first or hybrid_failover modes
     if "4-argon" in norm or "4_argon" in norm:
@@ -380,7 +383,14 @@ def resolve_web_model_family(model_name: str) -> str:
     """Resolve model into quota bucket family: 'argon', 'pro', or 'flash'."""
     canonical = resolve_gemini_web_model(model_name)
     meta = GEMINI_WEB_MODELS.get(canonical, {})
-    return str(meta.get("family") or "argon")
+    if meta.get("family"):
+        return str(meta["family"])
+    c_low = canonical.lower()
+    if "flash" in c_low or "lite" in c_low:
+        return "flash"
+    if "pro" in c_low:
+        return "pro"
+    return "argon"
 
 
 def build_model_selector_header(
@@ -455,6 +465,10 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
         r'\["([0-9a-f]{16})"\s*,\s*"([^"]{2,48})"',
         re.IGNORECASE,
     )
+    model_keyword_re = re.compile(
+        r"(argon|pro|flash|lite|ultra|nano|thinking|reasoning|gemini|\b\d+\.\d+\b)",
+        re.IGNORECASE,
+    )
     for m in pair_pattern.finditer(html):
         hex_id = m.group(1).lower()
         label = m.group(2).strip()
@@ -519,14 +533,32 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
                 "hex_id": hex_id,
             }
 
-    # Merge discovered models with baseline defaults so all Web App models are always available
+        # Dynamic auto-slug for any new/future model label in WIZ_global_data (e.g. "4.5 Pro", "5 Argon")
+        if model_keyword_re.search(label_lower):
+            slug = re.sub(r"^gemini\s+", "", label_lower)
+            slug = re.sub(r"[^a-z0-9.]+", "-", slug).strip("-")
+            if slug:
+                dyn_id = f"gemini-web-{slug}"
+                discovered_by_id.setdefault(
+                    dyn_id,
+                    {"id": dyn_id, "label": label, "hex_id": hex_id},
+                )
+
+    # Merge discovered models with baseline defaults AND append any newly discovered dynamic models
     merged: List[Dict[str, str]] = []
+    seen_ids = set()
     for base_item in _default_node_models_list():
         m_id = base_item["id"]
+        seen_ids.add(m_id)
         if m_id in discovered_by_id:
             merged.append(discovered_by_id[m_id])
         else:
             merged.append(base_item)
+
+    for dyn_id, dyn_item in discovered_by_id.items():
+        if dyn_id not in seen_ids:
+            merged.append(dyn_item)
+            seen_ids.add(dyn_id)
 
     result["models"] = merged
     return result
