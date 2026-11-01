@@ -16,7 +16,7 @@ import random
 import time
 import urllib.parse
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional, Set
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -393,49 +393,69 @@ class GeminiWebClient:
             if "/" in m_low:
                 m_low = m_low.split("/", 1)[1]
             if "4-argon-low" in m_low:
-                base_candidates = ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"]
+                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "4-argon-medium" in m_low:
-                base_candidates = ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-4-argon-medium", "gemini-4-argon-high"]
+                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "argon" in m_low:
-                base_candidates = ["gemini-4-argon-high", "gemini-4-argon-medium", "gemini-3.8-flash-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-4-argon-high", "gemini-4-argon-medium"]
+                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "3.1-pro-low" in m_low:
-                base_candidates = ["gemini-4-argon-low", "gemini-3.8-flash-high", "gemini-4-argon-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-4-argon-low", "gemini-2.5-pro"]
+                fallback_models = ["gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "3.1-pro" in m_low:
-                base_candidates = ["gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-4-argon-high", "gemini-2.5-pro"]
+                fallback_models = ["gemini-3.8-flash-high", "gemini-2.5-flash"]
+            elif "2.5-pro" in m_low or "pro" in m_low:
+                primary_models = ["gemini-2.5-pro", "gemini-4-argon-high"]
+                fallback_models = ["gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "3.5-flash-lite" in m_low or "flash-lite" in m_low:
-                base_candidates = ["gemini-3.5-flash-lite", "gemini-3.8-flash-low", "gemini-2.5-flash"]
+                primary_models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+                fallback_models = ["gemini-3.8-flash-low", "gemini-2.5-flash"]
             elif "3.8-flash-low" in m_low:
-                base_candidates = ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-2.5-flash"]
+                primary_models = ["gemini-3.8-flash-low", "gemini-3.8-flash-medium"]
+                fallback_models = ["gemini-2.5-flash"]
             elif "3.8-flash-medium" in m_low:
-                base_candidates = ["gemini-3.8-flash-medium", "gemini-3.8-flash-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-3.8-flash-medium", "gemini-3.8-flash-high"]
+                fallback_models = ["gemini-2.5-flash"]
             elif "3.8-flash" in m_low:
-                base_candidates = ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-2.5-flash"]
+                primary_models = ["gemini-3.8-flash-high", "gemini-3.8-flash-medium"]
+                fallback_models = ["gemini-2.5-flash"]
             elif "flash" in m_low:
-                base_candidates = ["gemini-2.5-flash", "gemini-3.8-flash-low", "gemini-3.5-flash-lite"]
+                primary_models = ["gemini-2.5-flash", "gemini-3.8-flash-low"]
+                fallback_models = ["gemini-3.5-flash-lite"]
             else:
-                base_candidates = ["gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
+                primary_models = ["gemini-4-argon-high"]
+                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
 
             # Dynamically prepend direct upstream gemini-<suffix> mapping for any newly discovered gemini-web-<suffix>
-            dynamic_candidates: List[str] = []
-            if m_low.startswith("gemini-web-") and m_low not in {"gemini-web-default", "gemini-web-argon", "gemini-web-3.1-pro", "gemini-web-3.1-pro-high", "gemini-web-3.1-pro-low"}:
+            known_tiered_roots = {
+                "gemini-web-default",
+                "gemini-web-argon",
+                "gemini-web-4-argon",
+                "gemini-web-3.1-pro",
+                "gemini-web-3.1-pro-high",
+                "gemini-web-3.1-pro-low",
+                "gemini-web-3.8-flash",
+            }
+            if m_low.startswith("gemini-web-") and m_low not in known_tiered_roots:
                 direct_upstream = "gemini-" + m_low[len("gemini-web-"):]
-                dynamic_candidates.append(direct_upstream)
+                dyn_list: List[str] = [direct_upstream]
                 if not direct_upstream.endswith(("-high", "-medium", "-low", "-lite")):
-                    dynamic_candidates.append(f"{direct_upstream}-high")
+                    dyn_list.append(f"{direct_upstream}-high")
+                for dm in reversed(dyn_list):
+                    if dm not in primary_models:
+                        primary_models.insert(0, dm)
 
-            candidate_models: List[str] = []
-            for cm in dynamic_candidates + base_candidates:
-                if cm not in candidate_models:
-                    candidate_models.append(cm)
-
-            resp = None
+            # Prepare refreshed credentials and project IDs once
+            prepared_creds: List[Tuple[Any, str]] = []
             for creds in candidate_creds:
                 if creds.is_expired and creds.refresh_token:
                     try:
                         creds = auth_mgr.refresh_access_token(creds)
                     except Exception:
                         continue
-
                 effective_proj = (
                     getattr(creds, "managed_project_id", None)
                     or getattr(creds, "project_id", None)
@@ -445,31 +465,47 @@ class GeminiWebClient:
                     resolved_pid = auth_mgr.resolve_project_id(creds)
                     if resolved_pid:
                         effective_proj = resolved_pid
+                prepared_creds.append((creds, effective_proj))
 
-                for upstream_model in candidate_models:
-                    prompt_id = str(uuid.uuid4())
-                    envelope = {
-                        "model": upstream_model,
-                        "project": effective_proj,
-                        "user_prompt_id": prompt_id,
-                        "request": {
-                            "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-                            "generationConfig": {"temperature": 0.4},
-                        },
-                    }
-                    headers = build_antigravity_headers(
-                        creds.access_token,
-                        effective_proj,
-                        prompt_id=prompt_id,
-                        trajectory_id=str(uuid.uuid4()),
-                    )
-                    resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-                    if resp.status_code in {404, 429, 500, 502, 503, 504}:
-                        resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-                    if resp.status_code == 200:
-                        break
-                    # Account-level lock/auth failure: skip remaining models on this account and try next healthy account
-                    if resp.status_code in {401, 403}:
+            resp = None
+            locked_emails: Set[str] = set()
+            # Pass 1: Try requested model family (primary_models) across ALL healthy accounts first
+            # Pass 2: Fall back to cross-family models only if no healthy account supports the primary family
+            for model_tier_group in (primary_models, fallback_models):
+                for creds, effective_proj in prepared_creds:
+                    c_email = (getattr(creds, "email", "") or "").strip().lower()
+                    if c_email and c_email in locked_emails:
+                        continue
+                    for upstream_model in model_tier_group:
+                        prompt_id = str(uuid.uuid4())
+                        envelope = {
+                            "model": upstream_model,
+                            "project": effective_proj,
+                            "user_prompt_id": prompt_id,
+                            "request": {
+                                "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+                                "generationConfig": {"temperature": 0.4},
+                            },
+                        }
+                        headers = build_antigravity_headers(
+                            creds.access_token,
+                            effective_proj,
+                            prompt_id=prompt_id,
+                            trajectory_id=str(uuid.uuid4()),
+                        )
+                        resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+                        if resp.status_code in {429, 500, 502, 503, 504}:
+                            resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+                        if resp.status_code == 200:
+                            break
+                        if resp.status_code in {401, 403}:
+                            if c_email:
+                                locked_emails.add(c_email)
+                            break
+                        # If 4-argon-high returns 404 on this account (e.g. gemini-4-argon-disabled), skip other 4-argon tiers on this same account
+                        if resp.status_code == 404 and "4-argon" in upstream_model:
+                            break
+                    if resp is not None and resp.status_code == 200:
                         break
                 if resp is not None and resp.status_code == 200:
                     break

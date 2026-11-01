@@ -1091,14 +1091,17 @@ class ModelDiscoveryManager:
 
     def get_discovered_models(self, force_refresh: bool = False) -> List[DiscoveredModel]:
         """Return parsed DiscoveredModel objects."""
-        raw_models = dict(self.fetch_models(force_refresh=force_refresh) or {})
+        raw_models = {
+            k: v for k, v in (self.fetch_models(force_refresh=force_refresh) or {}).items()
+            if not str(k).endswith("-disabled")
+        }
         if isinstance(getattr(self.auth_manager, "auth_file", None), Path):
             # 1. Dynamically synthesize gemini-web-* models from live Google API (fetchAvailableModels)
             live_snapshot = list(raw_models.items())
             for live_id, live_meta in live_snapshot:
                 if not isinstance(live_meta, dict) or not live_id.startswith("gemini-"):
                     continue
-                if live_id.startswith("gemini-web-") or live_id.endswith("-image") or "customtools" in live_id:
+                if live_id.startswith("gemini-web-") or live_id.endswith(("-image", "-disabled")) or "customtools" in live_id:
                     continue
                 suffix = live_id[len("gemini-"):]
                 web_id = f"gemini-web-{suffix}"
