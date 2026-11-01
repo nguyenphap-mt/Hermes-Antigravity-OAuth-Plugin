@@ -355,17 +355,22 @@ class AntigravityAccountPoolManager:
         """Read raw json dictionary from tokens file."""
         if not self.storage_path.is_file():
             return {}
-        try:
-            with open(self.storage_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.debug("Failed reading tokens file %s: %s", self.storage_path, e)
-            return {}
+        for attempt in range(2):
+            try:
+                with open(self.storage_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                if attempt == 0:
+                    time.sleep(0.025)
+                    continue
+                logger.debug("Failed reading tokens file %s: %s", self.storage_path, e)
+                return {}
+        return {}
 
     def _save_raw(self, data: Dict[str, Any]) -> None:
-        """Atomically write dictionary to tokens file."""
+        """Atomically write dictionary to tokens file using process+thread-unique temp file."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.storage_path.with_suffix(".tmp")
+        tmp = self.storage_path.with_name(f"{self.storage_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -378,31 +383,46 @@ class AntigravityAccountPoolManager:
                 tmp.unlink(missing_ok=True)
 
     def _ensure_initialized(self) -> None:
-        """Ensure accounts dict exists and active_account_email is tracked."""
+        """Ensure accounts dict exists and active_account_email is tracked (saving only when modified)."""
         with self._lock:
             data = self._load_raw()
             if not data:
                 return
 
+            dirty = False
             accounts = data.get("accounts")
-            if not isinstance(accounts, dict):
+            if isinstance(accounts, list):
+                converted: Dict[str, Any] = {}
+                for item in accounts:
+                    if isinstance(item, dict) and item.get("email"):
+                        em = str(item["email"]).strip().lower()
+                        converted[em] = {**item, "email": em, "status": item.get("status") or "active"}
+                accounts = converted
+                data["accounts"] = accounts
+                dirty = True
+            elif not isinstance(accounts, dict):
                 accounts = {}
                 if data.get("access_token") and data.get("email"):
                     em = data["email"].strip().lower()
                     accounts[em] = {**data, "email": em, "status": "active"}
                 data["accounts"] = accounts
+                dirty = True
 
             # Track active_account_email
             active_email = data.get("active_account_email")
             if not active_email and data.get("email"):
                 data["active_account_email"] = data["email"].strip().lower()
+                dirty = True
             elif not active_email and accounts:
                 data["active_account_email"] = next(iter(accounts.keys()))
+                dirty = True
 
             if "rotation_strategy" not in data:
                 data["rotation_strategy"] = "sharded"
+                dirty = True
 
-            self._save_raw(data)
+            if dirty:
+                self._save_raw(data)
 
     def get_rotation_strategy(self) -> str:
         """Get rotation strategy ('sharded', 'round_robin', 'fill_first', 'least_used', or 'failover')."""
@@ -990,6 +1010,44 @@ class AntigravityAccountPoolManager:
                         data[k] = active_data.get(k, "")
 
             self._save_raw(data)
+            if self.storage_path == DEFAULT_TOKENS_FILE:
+                mirror_files: List[Path] = []
+                try:
+                    dot_hermes = Path.home() / ".hermes"
+                    mirror_files.append(dot_hermes / "auth" / "antigravity_tokens.json")
+                    dot_profiles = dot_hermes / "profiles"
+                    if dot_profiles.is_dir():
+                        for p in sorted(dot_profiles.iterdir()):
+                            if p.is_dir() and not p.name.startswith("."):
+                                mirror_files.append(p / "auth" / "antigravity_tokens.json")
+                    if os.name == "nt":
+                        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                        appdata_h = base / "hermes"
+                        mirror_files.append(appdata_h / "auth" / "antigravity_tokens.json")
+                        win_profiles = appdata_h / "profiles"
+                        if win_profiles.is_dir():
+                            for p in sorted(win_profiles.iterdir()):
+                                if p.is_dir() and not p.name.startswith("."):
+                                    mirror_files.append(p / "auth" / "antigravity_tokens.json")
+                except Exception:
+                    pass
+                for mf in mirror_files:
+                    try:
+                        if mf.resolve() == self.storage_path.resolve() or not mf.is_file():
+                            continue
+                        with open(mf, "r", encoding="utf-8") as f:
+                            mdata = json.load(f)
+                        maccs = mdata.get("accounts")
+                        if isinstance(maccs, dict) and target in maccs:
+                            del maccs[target]
+                            mdata["accounts"] = maccs
+                            tmp_m = mf.with_name(f"{mf.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                            with open(tmp_m, "w", encoding="utf-8") as f:
+                                json.dump(mdata, f, indent=2)
+                            os.replace(str(tmp_m), str(mf))
+                    except Exception:
+                        pass
             logger.info("Removed account '%s' from Antigravity account pool.", target)
             return True
 

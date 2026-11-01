@@ -181,15 +181,30 @@ class AntigravityAuthManager:
         candidate_files = [self.auth_file]
         if not self._auth_file_is_custom:
             try:
-                root_home = Path.home() / ".hermes" / "auth" / "antigravity_tokens.json"
+                dot_hermes = Path.home() / ".hermes"
+                root_home = dot_hermes / "auth" / "antigravity_tokens.json"
                 if root_home not in candidate_files and root_home.is_file():
                     candidate_files.append(root_home)
+                dot_profiles = dot_hermes / "profiles"
+                if dot_profiles.is_dir():
+                    for p in sorted(dot_profiles.iterdir()):
+                        if p.is_dir() and not p.name.startswith("."):
+                            pf = p / "auth" / "antigravity_tokens.json"
+                            if pf not in candidate_files and pf.is_file():
+                                candidate_files.append(pf)
                 if sys.platform == "win32":
                     local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
                     base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
                     root_appdata = base / "hermes" / "auth" / "antigravity_tokens.json"
                     if root_appdata not in candidate_files and root_appdata.is_file():
                         candidate_files.append(root_appdata)
+                    win_profiles = base / "hermes" / "profiles"
+                    if win_profiles.is_dir():
+                        for p in sorted(win_profiles.iterdir()):
+                            if p.is_dir() and not p.name.startswith("."):
+                                pf = p / "auth" / "antigravity_tokens.json"
+                                if pf not in candidate_files and pf.is_file():
+                                    candidate_files.append(pf)
             except Exception:
                 pass
         creds_list: List[AntigravityCredentials] = []
@@ -206,12 +221,19 @@ class AntigravityAuthManager:
                     if isinstance(accounts, dict):
                         for email_key, acct_data in accounts.items():
                             if isinstance(acct_data, dict) and acct_data.get("access_token"):
-                                em = acct_data.get("email") or email_key
+                                em = (acct_data.get("email") or email_key).strip().lower()
+                                if em not in seen_emails:
+                                    seen_emails.add(em)
+                                    creds_list.append(AntigravityCredentials.from_dict(acct_data))
+                    elif isinstance(accounts, list):
+                        for acct_data in accounts:
+                            if isinstance(acct_data, dict) and acct_data.get("access_token"):
+                                em = (acct_data.get("email") or "primary").strip().lower()
                                 if em not in seen_emails:
                                     seen_emails.add(em)
                                     creds_list.append(AntigravityCredentials.from_dict(acct_data))
                     if data.get("access_token"):
-                        em = data.get("email") or "primary"
+                        em = (data.get("email") or "primary").strip().lower()
                         if em not in seen_emails:
                             seen_emails.add(em)
                             creds_list.append(AntigravityCredentials.from_dict(data))
@@ -249,8 +271,13 @@ class AntigravityAuthManager:
         target_token_files = [self.auth_file]
         if not self._auth_file_is_custom:
             try:
-                root_home = Path.home() / ".hermes" / "auth" / "antigravity_tokens.json"
-                target_token_files.append(root_home)
+                dot_hermes = Path.home() / ".hermes"
+                target_token_files.append(dot_hermes / "auth" / "antigravity_tokens.json")
+                dot_profiles = dot_hermes / "profiles"
+                if dot_profiles.is_dir():
+                    for p in sorted(dot_profiles.iterdir()):
+                        if p.is_dir() and not p.name.startswith("."):
+                            target_token_files.append(p / "auth" / "antigravity_tokens.json")
                 if sys.platform == "win32":
                     local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
                     base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
@@ -258,7 +285,7 @@ class AntigravityAuthManager:
                     target_token_files.append(appdata_hermes / "auth" / "antigravity_tokens.json")
                     profiles_dir = appdata_hermes / "profiles"
                     if profiles_dir.is_dir():
-                        for p in profiles_dir.iterdir():
+                        for p in sorted(profiles_dir.iterdir()):
                             if p.is_dir() and not p.name.startswith("."):
                                 target_token_files.append(p / "auth" / "antigravity_tokens.json")
             except Exception:
@@ -278,20 +305,50 @@ class AntigravityAuthManager:
         tmp_path: Optional[Path] = None
         try:
             existing_data: Dict[str, Any] = {}
+            merged_accounts: Dict[str, Dict[str, Any]] = {}
             for tf in target_token_files:
-                if tf.is_file():
-                    with contextlib.suppress(Exception):
-                        with open(tf, "r", encoding="utf-8") as f:
-                            existing_data = json.load(f)
-                            if existing_data.get("accounts"):
-                                break
+                if not tf.is_file():
+                    continue
+                with contextlib.suppress(Exception):
+                    with open(tf, "r", encoding="utf-8") as f:
+                        file_data = json.load(f)
+                    if not isinstance(file_data, dict):
+                        continue
+                    if not existing_data:
+                        existing_data = dict(file_data)
+                    raw_accs = file_data.get("accounts")
+                    iter_items: List[Tuple[str, Dict[str, Any]]] = []
+                    if isinstance(raw_accs, dict):
+                        for k, v in raw_accs.items():
+                            if isinstance(v, dict):
+                                iter_items.append(((v.get("email") or k or "primary").strip().lower(), v))
+                    elif isinstance(raw_accs, list):
+                        for v in raw_accs:
+                            if isinstance(v, dict) and (v.get("email") or v.get("access_token")):
+                                iter_items.append(((v.get("email") or "primary").strip().lower(), v))
+                    if file_data.get("access_token"):
+                        top_em = (file_data.get("email") or "primary").strip().lower()
+                        if top_em not in dict(iter_items):
+                            top_copy = {k: v for k, v in file_data.items() if k != "accounts"}
+                            iter_items.append((top_em, top_copy))
+                    for em_k, acc_v in iter_items:
+                        if not em_k:
+                            continue
+                        prev_m = merged_accounts.get(em_k)
+                        if not prev_m:
+                            merged_accounts[em_k] = dict(acc_v)
+                        else:
+                            # Merge keeping newer token fields while preserving non-empty metadata
+                            prev_ts = float(prev_m.get("updated_at") or prev_m.get("expires_at") or 0.0)
+                            curr_ts = float(acc_v.get("updated_at") or acc_v.get("expires_at") or 0.0)
+                            base_acc = dict(prev_m) if curr_ts >= prev_ts else dict(acc_v)
+                            newer_acc = acc_v if curr_ts >= prev_ts else prev_m
+                            for mk, mv in newer_acc.items():
+                                if mv not in (None, "", {}, []):
+                                    base_acc[mk] = mv
+                            merged_accounts[em_k] = base_acc
 
-            accounts = existing_data.get("accounts")
-            if not isinstance(accounts, dict):
-                accounts = {}
-                if existing_data.get("access_token"):
-                    prev_email = existing_data.get("email") or "primary"
-                    accounts[prev_email] = existing_data
+            accounts = merged_accounts
 
             email_key = (creds.email or "primary").strip().lower()
             prev_acct = accounts.get(email_key) if isinstance(accounts.get(email_key), dict) else {}
@@ -326,11 +383,12 @@ class AntigravityAuthManager:
             if not out_data.get("active_account_email") or reset_status:
                 out_data["active_account_email"] = email_key
 
-            # Save token files
+            # Save token files using process+thread-unique temp path to avoid cross-process truncation races
+            unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
             for tf in target_token_files:
                 try:
                     tf.parent.mkdir(parents=True, exist_ok=True)
-                    tmp_path = tf.with_suffix(".tmp")
+                    tmp_path = tf.with_name(tf.name + unique_suffix)
                     with open(tmp_path, "w", encoding="utf-8") as f:
                         json.dump(out_data, f, indent=2)
                     if os.name != "nt":
@@ -338,6 +396,8 @@ class AntigravityAuthManager:
                     os.replace(str(tmp_path), str(tf))
                 except Exception as e:
                     logger.debug("Failed saving token file to %s: %s", tf, e)
+                    if tmp_path is not None and tmp_path.exists():
+                        tmp_path.unlink(missing_ok=True)
 
             # Build pool entries
             pool_entries = []
@@ -366,7 +426,13 @@ class AntigravityAuthManager:
             auth_store_targets = [get_hermes_dir() / "auth.json"]
             if not self._auth_file_is_custom:
                 try:
-                    auth_store_targets.append(Path.home() / ".hermes" / "auth.json")
+                    dot_hermes = Path.home() / ".hermes"
+                    auth_store_targets.append(dot_hermes / "auth.json")
+                    dot_profiles = dot_hermes / "profiles"
+                    if dot_profiles.is_dir():
+                        for p in sorted(dot_profiles.iterdir()):
+                            if p.is_dir() and not p.name.startswith("."):
+                                auth_store_targets.append(p / "auth.json")
                     if sys.platform == "win32":
                         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
                         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
@@ -374,7 +440,7 @@ class AntigravityAuthManager:
                         auth_store_targets.append(appdata_h / "auth.json")
                         p_dir = appdata_h / "profiles"
                         if p_dir.is_dir():
-                            for p in p_dir.iterdir():
+                            for p in sorted(p_dir.iterdir()):
                                 if p.is_dir() and not p.name.startswith("."):
                                     auth_store_targets.append(p / "auth.json")
                 except Exception:
@@ -393,6 +459,7 @@ class AntigravityAuthManager:
             auth_store_targets = dedup_ast
 
             for ast in auth_store_targets:
+                tmp_ast: Optional[Path] = None
                 try:
                     ast.parent.mkdir(parents=True, exist_ok=True)
                     store: Dict[str, Any] = {}
@@ -404,7 +471,7 @@ class AntigravityAuthManager:
                     store.setdefault("credential_pool", {})["antigravity"] = pool_entries
                     store.setdefault("providers", {})["antigravity"] = provider_payload
 
-                    tmp_ast = ast.with_suffix(".tmp")
+                    tmp_ast = ast.with_name(ast.name + unique_suffix)
                     with open(tmp_ast, "w", encoding="utf-8") as af:
                         json.dump(store, af, indent=2)
                     if os.name != "nt":
@@ -412,6 +479,8 @@ class AntigravityAuthManager:
                     os.replace(str(tmp_ast), str(ast))
                 except Exception as e:
                     logger.debug("Failed syncing auth store to %s: %s", ast, e)
+                    if tmp_ast is not None and tmp_ast.exists():
+                        tmp_ast.unlink(missing_ok=True)
 
             # Sync to AntigravityAccountPoolManager
             try:

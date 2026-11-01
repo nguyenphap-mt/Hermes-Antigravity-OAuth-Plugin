@@ -75,7 +75,10 @@ def get_candidate_workspaces() -> List[Path]:
 
 
 def sync_tokens_across_profiles(homes: List[Path]):
-    """Sync valid tokens from the most recently updated tokens file to all profile directories."""
+    """Merge and sync valid OAuth accounts across all profile directories without losing any account."""
+    import hashlib
+    import json
+
     candidates = []
     for h in homes:
         t_file = h / "auth" / "antigravity_tokens.json"
@@ -88,15 +91,83 @@ def sync_tokens_across_profiles(homes: List[Path]):
     if not candidates:
         return
     candidates.sort(key=lambda x: x[0], reverse=True)
-    best_file = candidates[0][1]
     try:
-        content = best_file.read_bytes()
+        base_data = {}
+        merged_accounts = {}
+        for _, t_file in candidates:
+            try:
+                data = json.loads(t_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if not base_data:
+                base_data = dict(data)
+            raw_accs = data.get("accounts")
+            items = []
+            if isinstance(raw_accs, dict):
+                for k, v in raw_accs.items():
+                    if isinstance(v, dict):
+                        items.append(((v.get("email") or k or "primary").strip().lower(), v))
+            elif isinstance(raw_accs, list):
+                for v in raw_accs:
+                    if isinstance(v, dict) and (v.get("email") or v.get("access_token")):
+                        items.append(((v.get("email") or "primary").strip().lower(), v))
+            if data.get("access_token"):
+                top_em = (data.get("email") or "primary").strip().lower()
+                if top_em not in dict(items):
+                    items.append((top_em, {k: v for k, v in data.items() if k != "accounts"}))
+            for em, acc in items:
+                if not em:
+                    continue
+                prev = merged_accounts.get(em)
+                if not prev:
+                    merged_accounts[em] = dict(acc)
+                else:
+                    prev_ts = float(prev.get("updated_at") or prev.get("expires_at") or 0.0)
+                    curr_ts = float(acc.get("updated_at") or acc.get("expires_at") or 0.0)
+                    merged = dict(prev) if curr_ts >= prev_ts else dict(acc)
+                    newer = acc if curr_ts >= prev_ts else prev
+                    for mk, mv in newer.items():
+                        if mv not in (None, "", {}, []):
+                            merged[mk] = mv
+                    merged_accounts[em] = merged
+
+        if not base_data:
+            return
+        base_data["accounts"] = merged_accounts
+        if not base_data.get("active_account_email") and merged_accounts:
+            base_data["active_account_email"] = next(iter(merged_accounts.keys()))
+
+        merged_bytes = json.dumps(base_data, indent=2).encode("utf-8")
+        pool_entries = []
+        for email_k, acct in merged_accounts.items():
+            exp_ms = int(float(acct.get("expires_at", 0)) * 1000) if acct.get("expires_at") else None
+            pool_entries.append({
+                "id": hashlib.sha256(email_k.encode("utf-8")).hexdigest()[:6],
+                "source": f"oauth:{email_k}",
+                "auth_type": "oauth",
+                "access_token": acct.get("access_token") or "",
+                "refresh_token": acct.get("refresh_token") or "",
+                "expires_at_ms": exp_ms,
+                "base_url": "http://127.0.0.1:8100/v1",
+                "label": email_k,
+            })
+
         for h in homes:
             dest = h / "auth" / "antigravity_tokens.json"
-            if dest != best_file:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(content)
-        print(f"      + Synchronized OAuth tokens from {best_file.parent.parent.name} across all {len(homes)} profiles.")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(merged_bytes)
+            auth_json = h / "auth.json"
+            if auth_json.is_file():
+                try:
+                    store = json.loads(auth_json.read_text(encoding="utf-8"))
+                    if isinstance(store, dict):
+                        store.setdefault("credential_pool", {})["antigravity"] = pool_entries
+                        auth_json.write_text(json.dumps(store, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+        print(f"      + Merged & synchronized {len(merged_accounts)} OAuth account(s) across all {len(homes)} profiles.")
     except Exception as e:
         print(f"      ! Warning: Token sync failed: {e}")
 
