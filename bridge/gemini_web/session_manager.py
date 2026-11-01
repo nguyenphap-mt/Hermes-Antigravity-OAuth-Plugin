@@ -384,7 +384,7 @@ class GeminiWebSessionManager:
                         (target_email and em == target_email)
                         or (cleaned_node and (em_slug == cleaned_node or em == cleaned_node))
                     ):
-                        tier_raw = str(acc.get("tier_id") or acc.get("plan_type") or "").lower()
+                        tier_raw = f"{acc.get('tier_id') or ''} {acc.get('plan_name') or ''} {acc.get('plan_type') or ''}".lower()
                         tier = "ultra" if "ultra" in tier_raw else ("pro" if "pro" in tier_raw else "free")
                         return {
                             "email": em,
@@ -424,6 +424,20 @@ class GeminiWebSessionManager:
                 pass
 
         return None
+
+    @staticmethod
+    def _is_valid_gemini_app_response(resp: Any, html: str) -> bool:
+        """Return False if Google redirected the request to support.google.com or accounts.google.com."""
+        final_url = str(getattr(resp, "url", "") or "").lower()
+        if final_url and (
+            "support.google.com" in final_url
+            or "accounts.google.com" in final_url
+            or "/faq" in final_url
+        ):
+            return False
+        if "support.google.com/accounts/answer" in html[:4000]:
+            return False
+        return True
 
     async def handshake_and_probe_models(
         self,
@@ -485,13 +499,17 @@ class GeminiWebSessionManager:
                 if ck_val:
                     cookies[ck_name] = ck_val
 
-            snlm0e_match = re.search(r'"SNlM0e"\s*:\s*"([^"]+)"', html)
-            cfb2h_match = re.search(r'"cfb2h"\s*:\s*"([^"]+)"', html)
-            fsid_match = re.search(r'"FdrFJe"\s*:\s*"([^"]+)"', html)
-
-            snlm0e = snlm0e_match.group(1) if snlm0e_match else ""
-            cfb2h = cfb2h_match.group(1) if cfb2h_match else "boq_assistant-bard-web-server_20260501.08_p0"
-            fsid = fsid_match.group(1) if fsid_match else ""
+            if self._is_valid_gemini_app_response(resp, html):
+                snlm0e_match = re.search(r'"SNlM0e"\s*:\s*"([^"]+)"', html)
+                cfb2h_match = re.search(r'"cfb2h"\s*:\s*"([^"]+)"', html)
+                fsid_match = re.search(r'"FdrFJe"\s*:\s*"([^"]+)"', html)
+                snlm0e = snlm0e_match.group(1) if snlm0e_match else ""
+                cfb2h = cfb2h_match.group(1) if cfb2h_match else "boq_assistant-bard-web-server_20260501.08_p0"
+                fsid = fsid_match.group(1) if fsid_match else ""
+            else:
+                snlm0e = ""
+                cfb2h = "boq_assistant-bard-web-server_20260501.08_p0"
+                fsid = ""
 
             if not snlm0e:
                 # Try rotating cookie once in case __Secure-1PSIDTS was slightly stale
@@ -501,12 +519,13 @@ class GeminiWebSessionManager:
                     cookies = dict(refreshed_sess.get("cookies") or {})
                     resp2 = await http_client.get(GEMINI_WEB_APP_URL, headers=headers, cookies=cookies)
                     html = resp2.text or ""
-                    snlm0e_match = re.search(r'"SNlM0e"\s*:\s*"([^"]+)"', html)
-                    cfb2h_match = re.search(r'"cfb2h"\s*:\s*"([^"]+)"', html)
-                    fsid_match = re.search(r'"FdrFJe"\s*:\s*"([^"]+)"', html)
-                    snlm0e = snlm0e_match.group(1) if snlm0e_match else ""
-                    cfb2h = cfb2h_match.group(1) if cfb2h_match else cfb2h
-                    fsid = fsid_match.group(1) if fsid_match else fsid
+                    if self._is_valid_gemini_app_response(resp2, html):
+                        snlm0e_match = re.search(r'"SNlM0e"\s*:\s*"([^"]+)"', html)
+                        cfb2h_match = re.search(r'"cfb2h"\s*:\s*"([^"]+)"', html)
+                        fsid_match = re.search(r'"FdrFJe"\s*:\s*"([^"]+)"', html)
+                        snlm0e = snlm0e_match.group(1) if snlm0e_match else ""
+                        cfb2h = cfb2h_match.group(1) if cfb2h_match else cfb2h
+                        fsid = fsid_match.group(1) if fsid_match else fsid
 
             if not snlm0e:
                 # Fallback: Check if this browser cookie node belongs to an authenticated Google account in hermes_dir
@@ -538,6 +557,13 @@ class GeminiWebSessionManager:
                 }
 
             scraped = scrape_models_and_tier_from_html(html)
+            scraped_email = scraped.get("email") or ""
+            linked = self._resolve_linked_google_account(node_id, email_hint=scraped_email)
+            tier_rank = {"free": 0, "pro": 1, "ultra": 2}
+            scraped_tier = str(scraped.get("detected_tier") or "free").lower()
+            linked_tier = str(linked.get("tier") or "free").lower() if linked else "free"
+            best_tier = linked_tier if tier_rank.get(linked_tier, 0) > tier_rank.get(scraped_tier, 0) else scraped_tier
+
             self.save_session(
                 node_id=node_id,
                 cookies=cookies,
@@ -552,8 +578,8 @@ class GeminiWebSessionManager:
                 "snlm0e": snlm0e,
                 "cfb2h": cfb2h,
                 "fsid": fsid,
-                "email": scraped.get("email"),
-                "detected_tier": scraped.get("detected_tier", "pro"),
+                "email": scraped_email or (linked.get("email") if linked else None),
+                "detected_tier": best_tier,
                 "available_models": scraped.get("models") or _default_node_models_list(),
             }
         except Exception as e:
@@ -700,7 +726,7 @@ class GeminiWebSessionManager:
                     em = str(acc.get("email") or "").strip().lower()
                     if not em:
                         continue
-                    tier_raw = str(acc.get("tier_id") or acc.get("plan_type") or "").lower()
+                    tier_raw = f"{acc.get('tier_id') or ''} {acc.get('plan_name') or ''} {acc.get('plan_type') or ''}".lower()
                     tier = "ultra" if "ultra" in tier_raw else ("pro" if "pro" in tier_raw else "free")
                     tier_label = "Google AI Ultra" if tier == "ultra" else ("Google AI Pro" if tier == "pro" else "Free")
                     disp = f"{em.split('@')[0]} ({tier_label})"

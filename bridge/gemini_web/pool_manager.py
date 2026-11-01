@@ -209,6 +209,27 @@ class GeminiWebPoolManager:
                 cfg.update(data["config"])
             nodes_raw = data.get("nodes") or []
             nodes = [GeminiWebNode.from_dict(item) for item in nodes_raw if isinstance(item, dict)]
+            tier_rank = {"free": 0, "pro": 1, "ultra": 2}
+            dirty = False
+            for n in nodes:
+                linked = self.session_manager._resolve_linked_google_account(
+                    n.node_id, email_hint=n.email or n.linked_oauth_account_id
+                )
+                if linked:
+                    l_tier = str(linked.get("tier") or "free").lower()
+                    if tier_rank.get(l_tier, 0) > tier_rank.get(n.detected_tier, 0):
+                        old_tier = n.detected_tier
+                        n.detected_tier = l_tier
+                        # Upgrade quota_limits if still on old default limits
+                        old_defaults = TIER_DEFAULT_LIMITS.get(old_tier, TIER_DEFAULT_LIMITS["free"])
+                        if n.quota_limits.get("argon_hourly_limit") == old_defaults.get("argon_hourly_limit"):
+                            n.quota_limits = dict(TIER_DEFAULT_LIMITS.get(l_tier, TIER_DEFAULT_LIMITS["pro"]))
+                        dirty = True
+            if dirty:
+                try:
+                    self._save_pool_raw(cfg, nodes)
+                except Exception:
+                    pass
             return cfg, nodes
         except Exception as e:
             logger.warning("Failed to read gemini_web_pool.json: %s", e)
@@ -403,8 +424,13 @@ class GeminiWebPoolManager:
                 )
                 if linked_oauth_account_id:
                     existing_node.linked_oauth_account_id = linked_oauth_account_id
+                old_tier = existing_node.detected_tier
                 existing_node.status = status
                 existing_node.detected_tier = tier
+                if old_tier != tier:
+                    old_defaults = TIER_DEFAULT_LIMITS.get(old_tier, TIER_DEFAULT_LIMITS["free"])
+                    if existing_node.quota_limits.get("argon_hourly_limit") == old_defaults.get("argon_hourly_limit"):
+                        existing_node.quota_limits = dict(TIER_DEFAULT_LIMITS.get(tier, TIER_DEFAULT_LIMITS["pro"]))
                 if probe_res.get("available_models"):
                     existing_node.available_models = probe_res["available_models"]
                 existing_node.last_error = "" if probe_res.get("ok") else str(probe_res.get("error") or "")

@@ -444,9 +444,14 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
         if not candidate_email.endswith(".png") and not candidate_email.endswith(".svg"):
             result["email"] = candidate_email.lower()
 
-    # 2. Detect tier (Ultra / Pro / Advanced / Argon)
+    # 2. Detect tier (Ultra / Pro / Advanced / Argon / g1-pro-tier / Vietnamese UI "Pro" badge)
     html_lower = html.lower()
-    if "gemini ultra" in html_lower or "google ai ultra" in html_lower:
+    if (
+        "gemini ultra" in html_lower
+        or "google ai ultra" in html_lower
+        or "g1-ultra" in html_lower
+        or "g1_ultra" in html_lower
+    ):
         result["detected_tier"] = "ultra"
     elif (
         "gemini argon" in html_lower
@@ -455,7 +460,10 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
         or "gemini advanced" in html_lower
         or "google one ai" in html_lower
         or "google ai pro" in html_lower
+        or "g1-pro" in html_lower
+        or "g1_pro" in html_lower
         or "2.5 pro" in html_lower
+        or '"pro"' in html_lower
     ):
         result["detected_tier"] = "pro"
 
