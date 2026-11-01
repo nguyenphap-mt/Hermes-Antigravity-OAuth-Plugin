@@ -395,27 +395,27 @@ class GeminiWebClient:
                     effective_proj = resolved_pid
             m_low = (model_name or "").lower()
             if "4-argon-low" in m_low:
-                candidate_models = ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-2.5-pro", "gemini-2.5-flash"]
+                candidate_models = ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "4-argon-medium" in m_low:
-                candidate_models = ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-2.5-pro", "gemini-2.5-flash"]
+                candidate_models = ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "argon" in m_low:
-                candidate_models = ["gemini-4-argon-high", "gemini-4-argon-medium", "gemini-3.1-pro-high", "gemini-2.5-pro", "gemini-2.5-flash"]
+                candidate_models = ["gemini-4-argon-high", "gemini-4-argon-medium", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "3.1-pro-low" in m_low:
-                candidate_models = ["gemini-3.1-pro-low", "gemini-3.1-pro-high", "gemini-2.5-pro", "gemini-2.5-flash"]
+                candidate_models = ["gemini-4-argon-low", "gemini-3.8-flash-high", "gemini-4-argon-high", "gemini-2.5-flash"]
             elif "3.1-pro" in m_low:
-                candidate_models = ["gemini-3.1-pro-high", "gemini-3.1-pro-low", "gemini-2.5-pro", "gemini-2.5-flash"]
+                candidate_models = ["gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "3.5-flash-lite" in m_low or "flash-lite" in m_low:
-                candidate_models = ["gemini-3.5-flash-lite", "gemini-3.8-flash-low", "gemini-2.5-flash", "gemini-2.0-flash"]
+                candidate_models = ["gemini-3.5-flash-lite", "gemini-3.8-flash-low", "gemini-2.5-flash"]
             elif "3.8-flash-low" in m_low:
-                candidate_models = ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-2.5-flash", "gemini-2.0-flash"]
+                candidate_models = ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-2.5-flash"]
             elif "3.8-flash-medium" in m_low:
-                candidate_models = ["gemini-3.8-flash-medium", "gemini-3.8-flash-high", "gemini-2.5-flash", "gemini-2.0-flash"]
+                candidate_models = ["gemini-3.8-flash-medium", "gemini-3.8-flash-high", "gemini-2.5-flash"]
             elif "3.8-flash" in m_low:
-                candidate_models = ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-2.5-flash", "gemini-2.0-flash"]
+                candidate_models = ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-2.5-flash"]
             elif "flash" in m_low:
-                candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
+                candidate_models = ["gemini-2.5-flash", "gemini-3.8-flash-low", "gemini-3.5-flash-lite"]
             else:
-                candidate_models = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+                candidate_models = ["gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
 
             resp = None
             for upstream_model in candidate_models:
