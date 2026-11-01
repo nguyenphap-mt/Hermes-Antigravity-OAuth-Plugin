@@ -100,6 +100,96 @@ ANTIGRAVITY_SUPPORTED_MODELS = [
         "description": "GPT-OSS 120B open-weights model via Antigravity.",
     },
     {
+        "id": "gemini-4-argon-high",
+        "name": "Gemini 4 Argon (High)",
+        "code_assist_model": "gemini-4-argon-high",
+        "description": "Gemini 4 Argon flagship reasoning model (High thinking).",
+    },
+    {
+        "id": "gemini-4-argon-medium",
+        "name": "Gemini 4 Argon (Medium)",
+        "code_assist_model": "gemini-4-argon-medium",
+        "description": "Gemini 4 Argon flagship reasoning model (Medium thinking).",
+    },
+    {
+        "id": "gemini-4-argon-low",
+        "name": "Gemini 4 Argon (Low)",
+        "code_assist_model": "gemini-4-argon-low",
+        "description": "Gemini 4 Argon flagship reasoning model (Low thinking).",
+    },
+    {
+        "id": "gemini-web-4-argon",
+        "name": "Gemini 4 Argon (Web App — Nhiệm vụ phức tạp)",
+        "code_assist_model": "gemini-web-4-argon",
+        "description": "Gemini 4 Argon via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-4-argon-high",
+        "name": "Gemini 4 Argon High (Web App)",
+        "code_assist_model": "gemini-web-4-argon-high",
+        "description": "Gemini 4 Argon (High Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-4-argon-medium",
+        "name": "Gemini 4 Argon Medium (Web App)",
+        "code_assist_model": "gemini-web-4-argon-medium",
+        "description": "Gemini 4 Argon (Medium Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-4-argon-low",
+        "name": "Gemini 4 Argon Low (Web App)",
+        "code_assist_model": "gemini-web-4-argon-low",
+        "description": "Gemini 4 Argon (Low Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.1-pro",
+        "name": "Gemini 3.1 Pro (Web App — Suy luận nâng cao)",
+        "code_assist_model": "gemini-web-3.1-pro",
+        "description": "Gemini 3.1 Pro via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.1-pro-high",
+        "name": "Gemini 3.1 Pro High (Web App)",
+        "code_assist_model": "gemini-web-3.1-pro-high",
+        "description": "Gemini 3.1 Pro (High Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.1-pro-low",
+        "name": "Gemini 3.1 Pro Low (Web App)",
+        "code_assist_model": "gemini-web-3.1-pro-low",
+        "description": "Gemini 3.1 Pro (Low Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.8-flash",
+        "name": "Gemini 3.8 Flash (Web App — Trợ giúp toàn diện)",
+        "code_assist_model": "gemini-web-3.8-flash",
+        "description": "Gemini 3.8 Flash via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.8-flash-high",
+        "name": "Gemini 3.8 Flash High (Web App)",
+        "code_assist_model": "gemini-web-3.8-flash-high",
+        "description": "Gemini 3.8 Flash (High Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.8-flash-medium",
+        "name": "Gemini 3.8 Flash Medium (Web App)",
+        "code_assist_model": "gemini-web-3.8-flash-medium",
+        "description": "Gemini 3.8 Flash (Medium Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.8-flash-low",
+        "name": "Gemini 3.8 Flash Low (Web App)",
+        "code_assist_model": "gemini-web-3.8-flash-low",
+        "description": "Gemini 3.8 Flash (Low Thinking) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-3.5-flash-lite",
+        "name": "Gemini 3.5 Flash-Lite (Web App — Nhanh nhất)",
+        "code_assist_model": "gemini-web-3.5-flash-lite",
+        "description": "Gemini 3.5 Flash-Lite via gemini.google.com/app consumer web quota.",
+    },
+    {
         "id": "gemini-web-argon",
         "name": "Gemini Argon (Web App Pro/Ultra)",
         "code_assist_model": "gemini-web-argon",
@@ -120,6 +210,12 @@ ANTIGRAVITY_SUPPORTED_MODELS = [
 ]
 
 MODEL_ALIAS_MAP = {
+    # Gemini 4 Argon
+    "gemini-4-argon": "gemini-4-argon-high",
+    "gemini-4-argon-high": "gemini-4-argon-high",
+    "gemini-4-argon-medium": "gemini-4-argon-medium",
+    "gemini-4-argon-low": "gemini-4-argon-low",
+
     # Gemini 3.8 Pro / Flash
     "gemini-3.8-pro-high": "gemini-3.8-pro-high",
     "gemini-3.8-pro-low": "gemini-3.8-pro-low",
@@ -188,6 +284,9 @@ MODEL_ALIAS_MAP = {
 
 
 VALID_CODE_ASSIST_MODELS = {
+    "gemini-4-argon-high",
+    "gemini-4-argon-medium",
+    "gemini-4-argon-low",
     "gemini-3.8-pro-high",
     "gemini-3.8-pro-low",
     "gemini-3.8-flash-high",

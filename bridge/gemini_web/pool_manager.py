@@ -129,6 +129,22 @@ class GeminiWebNode:
                 if isinstance(raw_ts.get(fam), list):
                     ts_map[fam] = [float(x) for x in raw_ts[fam] if isinstance(x, (int, float))]
 
+        raw_avail = d.get("available_models")
+        merged_avail: List[Dict[str, str]] = []
+        seen_ids: Set[str] = set()
+        for m in _default_node_models_list():
+            mid = str(m.get("id") or "").strip()
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                merged_avail.append(m)
+        if isinstance(raw_avail, list):
+            for m in raw_avail:
+                if isinstance(m, dict) and m.get("id"):
+                    mid = str(m["id"]).strip()
+                    if mid and mid not in seen_ids:
+                        seen_ids.add(mid)
+                        merged_avail.append(m)
+
         return cls(
             node_id=str(d.get("node_id") or _slugify_node_id(str(d.get("email") or ""))),
             email=str(d.get("email") or ""),
@@ -137,8 +153,8 @@ class GeminiWebNode:
             enabled=bool(d.get("enabled", True)),
             status=str(d.get("status") or "ready"),
             detected_tier=tier,
-            available_models=d.get("available_models") or _default_node_models_list(),
-            default_web_model=str(d.get("default_web_model") or "gemini-web-argon"),
+            available_models=merged_avail,
+            default_web_model=str(d.get("default_web_model") or "gemini-web-4-argon"),
             quota_limits=default_limits,
             usage_timestamps=ts_map,
             total_requests=int(d.get("total_requests") or 0),

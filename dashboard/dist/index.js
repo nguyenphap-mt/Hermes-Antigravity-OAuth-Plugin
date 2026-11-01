@@ -447,7 +447,7 @@
     var testModalNode = testModalNodeState[0];
     var setTestModalNode = testModalNodeState[1];
 
-    var testModelState = useState("gemini-web-argon");
+    var testModelState = useState("gemini-web-4-argon");
     var testModel = testModelState[0];
     var setTestModel = testModelState[1];
 
@@ -776,7 +776,7 @@
               ),
             ]),
             h("p", { className: "text-xs text-zinc-400 mt-1" },
-              "Khai thác hạn mức Gemini Argon, Gemini 2.5 Pro & 2.5 Flash trực tiếp trên nền Web App (hoạt động độc lập ngay cả khi tài khoản bị hết hoặc khóa quota Code Assist)."
+              "Khai thác hạn mức 4 Argon (Nhiệm vụ phức tạp), 3.1 Pro, 3.8 Flash & 3.5 Flash-Lite trực tiếp trên nền Web App (hoạt động độc lập ngay cả khi tài khoản bị hết hoặc khóa quota Code Assist)."
             ),
           ]),
           h("div", { className: "flex flex-wrap items-center gap-2" }, [
@@ -906,7 +906,7 @@
                 // Sliding-Window Quota Bars
                 h("div", { className: "space-y-2 pt-1" }, [
                   renderQuotaBar(
-                    "Gemini Argon (Pro/Ultra)",
+                    "4 Argon — Nhiệm vụ phức tạp",
                     q.argon_1h_count || 0,
                     q.argon_1h_limit || 40,
                     q.argon_24h_count || 0,
@@ -914,7 +914,7 @@
                     q.argon_remaining_pct != null ? q.argon_remaining_pct : 100
                   ),
                   renderQuotaBar(
-                    "Gemini 2.5 Pro",
+                    "3.1 Pro / 2.5 Pro — Suy luận nâng cao",
                     q.pro_1h_count || 0,
                     q.pro_1h_limit || 50,
                     q.pro_24h_count || 0,
@@ -922,7 +922,7 @@
                     q.pro_remaining_pct != null ? q.pro_remaining_pct : 100
                   ),
                   renderQuotaBar(
-                    "Gemini 2.5 Flash",
+                    "3.8 Flash / 3.5 Flash-Lite",
                     q.flash_1h_count || 0,
                     q.flash_1h_limit || 200,
                     q.flash_24h_count || 0,
@@ -1153,13 +1153,25 @@
           ]),
           h("div", { className: "space-y-3 text-xs" }, [
             h("div", null, [
-              h("label", { className: "text-zinc-400 block mb-1" }, "Chọn Model Nhánh Web:"),
+              h("label", { className: "text-zinc-400 block mb-1" }, "Chọn Model Nhánh Web (gemini.google.com/app):"),
               h("select", {
                 className: "ag-select w-full",
                 value: testModel,
                 onChange: function (e) { setTestModel(e.target.value); },
               }, [
-                h("option", { value: "gemini-web-argon" }, "Gemini Argon (gemini-web-argon — Pro/Ultra)"),
+                h("option", { value: "gemini-web-4-argon" }, "4 Argon — Nhiệm vụ phức tạp (gemini-web-4-argon)"),
+                h("option", { value: "gemini-web-4-argon-high" }, "4 Argon • Tư duy Cao / High (gemini-web-4-argon-high)"),
+                h("option", { value: "gemini-web-4-argon-medium" }, "4 Argon • Tư duy Trung bình / Medium (gemini-web-4-argon-medium)"),
+                h("option", { value: "gemini-web-4-argon-low" }, "4 Argon • Tư duy Thấp / Low (gemini-web-4-argon-low)"),
+                h("option", { value: "gemini-web-3.1-pro" }, "3.1 Pro — Suy luận nâng cao (gemini-web-3.1-pro)"),
+                h("option", { value: "gemini-web-3.1-pro-high" }, "3.1 Pro • Tư duy Cao / High (gemini-web-3.1-pro-high)"),
+                h("option", { value: "gemini-web-3.1-pro-low" }, "3.1 Pro • Tư duy Thấp / Low (gemini-web-3.1-pro-low)"),
+                h("option", { value: "gemini-web-3.8-flash" }, "3.8 Flash — Trợ giúp toàn diện (gemini-web-3.8-flash)"),
+                h("option", { value: "gemini-web-3.8-flash-high" }, "3.8 Flash • Tư duy Cao / High (gemini-web-3.8-flash-high)"),
+                h("option", { value: "gemini-web-3.8-flash-medium" }, "3.8 Flash • Tư duy Trung bình / Medium (gemini-web-3.8-flash-medium)"),
+                h("option", { value: "gemini-web-3.8-flash-low" }, "3.8 Flash • Tư duy Thấp / Low (gemini-web-3.8-flash-low)"),
+                h("option", { value: "gemini-web-3.5-flash-lite" }, "3.5 Flash-Lite — Câu trả lời nhanh nhất (gemini-web-3.5-flash-lite)"),
+                h("option", { value: "gemini-web-argon" }, "Gemini Argon Legacy (gemini-web-argon)"),
                 h("option", { value: "gemini-web-2.5-pro" }, "Gemini 2.5 Pro (gemini-web-2.5-pro)"),
                 h("option", { value: "gemini-web-2.5-flash" }, "Gemini 2.5 Flash (gemini-web-2.5-flash)"),
               ]),

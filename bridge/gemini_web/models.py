@@ -19,6 +19,210 @@ logger = logging.getLogger(__name__)
 
 # Baseline Gemini Web App models and their known BardFrontendService hex descriptors
 GEMINI_WEB_MODELS: Dict[str, Dict[str, Any]] = {
+    "gemini-web-4-argon": {
+        "id": "gemini-web-4-argon",
+        "displayName": "Gemini 4 Argon — Nhiệm vụ phức tạp (Web App)",
+        "family": "argon",
+        "default_hex": "9d8ca3786ebdfbea",
+        "fallback_hexes": ["56fdd199312815e2", "61530e79959ab139"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "4 Argon (Nhiệm vụ phức tạp) via gemini.google.com/app consumer web quota.",
+    },
+    "gemini-web-4-argon-high": {
+        "id": "gemini-web-4-argon-high",
+        "displayName": "Gemini 4 Argon (High Thinking — Web App)",
+        "family": "argon",
+        "default_hex": "9d8ca3786ebdfbea",
+        "fallback_hexes": ["56fdd199312815e2"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON_HIGH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "4 Argon (Cấp độ tư duy Cao / High) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-4-argon-medium": {
+        "id": "gemini-web-4-argon-medium",
+        "displayName": "Gemini 4 Argon (Medium Thinking — Web App)",
+        "family": "argon",
+        "default_hex": "9d8ca3786ebdfbea",
+        "fallback_hexes": ["56fdd199312815e2"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON_MEDIUM",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "4 Argon (Cấp độ tư duy Trung bình / Medium) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-4-argon-low": {
+        "id": "gemini-web-4-argon-low",
+        "displayName": "Gemini 4 Argon (Low Thinking — Web App)",
+        "family": "argon",
+        "default_hex": "9d8ca3786ebdfbea",
+        "fallback_hexes": ["56fdd199312815e2"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON_LOW",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "4 Argon (Cấp độ tư duy Nhanh / Low) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.1-pro": {
+        "id": "gemini-web-3.1-pro",
+        "displayName": "Gemini 3.1 Pro — Suy luận nâng cao (Web App)",
+        "family": "pro",
+        "default_hex": "61530e79959ab139",
+        "fallback_hexes": ["9d8ca3786ebdfbea", "2525e3954d185b3c"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_31_PRO",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.1 Pro (Suy luận nâng cao) via gemini.google.com/app consumer web quota.",
+    },
+    "gemini-web-3.1-pro-high": {
+        "id": "gemini-web-3.1-pro-high",
+        "displayName": "Gemini 3.1 Pro (High Thinking — Web App)",
+        "family": "pro",
+        "default_hex": "61530e79959ab139",
+        "fallback_hexes": ["9d8ca3786ebdfbea"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 10001,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_31_PRO_HIGH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.1 Pro (Cấp độ tư duy Cao / High) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.1-pro-low": {
+        "id": "gemini-web-3.1-pro-low",
+        "displayName": "Gemini 3.1 Pro (Low Thinking — Web App)",
+        "family": "pro",
+        "default_hex": "61530e79959ab139",
+        "fallback_hexes": ["9d8ca3786ebdfbea"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1001,
+        "minThinkingBudget": 128,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_31_PRO_LOW",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.1 Pro (Cấp độ tư duy Nhanh / Low) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.8-flash": {
+        "id": "gemini-web-3.8-flash",
+        "displayName": "Gemini 3.8 Flash — Trợ giúp toàn diện (Web App)",
+        "family": "flash",
+        "default_hex": "9ec249fc9ad08861",
+        "fallback_hexes": ["71c2d248d3b102ff"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.8 Flash (Trợ giúp toàn diện) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.8-flash-high": {
+        "id": "gemini-web-3.8-flash-high",
+        "displayName": "Gemini 3.8 Flash (High Thinking — Web App)",
+        "family": "flash",
+        "default_hex": "9ec249fc9ad08861",
+        "fallback_hexes": ["71c2d248d3b102ff"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH_HIGH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.8 Flash (Cấp độ tư duy Cao / High) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.8-flash-medium": {
+        "id": "gemini-web-3.8-flash-medium",
+        "displayName": "Gemini 3.8 Flash (Medium Thinking — Web App)",
+        "family": "flash",
+        "default_hex": "9ec249fc9ad08861",
+        "fallback_hexes": ["71c2d248d3b102ff"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH_MEDIUM",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.8 Flash (Cấp độ tư duy Trung bình / Medium) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.8-flash-low": {
+        "id": "gemini-web-3.8-flash-low",
+        "displayName": "Gemini 3.8 Flash (Low Thinking — Web App)",
+        "family": "flash",
+        "default_hex": "9ec249fc9ad08861",
+        "fallback_hexes": ["71c2d248d3b102ff"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH_LOW",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.8 Flash (Cấp độ tư duy Nhanh / Low) via gemini.google.com/app web quota.",
+    },
+    "gemini-web-3.5-flash-lite": {
+        "id": "gemini-web-3.5-flash-lite",
+        "displayName": "Gemini 3.5 Flash-Lite — Câu trả lời nhanh nhất (Web App)",
+        "family": "flash",
+        "default_hex": "71c2d248d3b102ff",
+        "fallback_hexes": ["9ec249fc9ad08861"],
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_35_FLASH_LITE",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+        "description": "3.5 Flash-Lite (Câu trả lời nhanh nhất) via gemini.google.com/app web quota.",
+    },
     "gemini-web-argon": {
         "id": "gemini-web-argon",
         "displayName": "Gemini Argon (Web App Pro/Ultra)",
@@ -90,17 +294,30 @@ GEMINI_WEB_MODELS: Dict[str, Dict[str, Any]] = {
 }
 
 GEMINI_WEB_ALIASES: Dict[str, str] = {
+    "gemini-web-4-argon": "gemini-web-4-argon",
+    "gemini-web-4-argon-high": "gemini-web-4-argon-high",
+    "gemini-web-4-argon-medium": "gemini-web-4-argon-medium",
+    "gemini-web-4-argon-low": "gemini-web-4-argon-low",
+    "gemini-web-3.1-pro": "gemini-web-3.1-pro",
+    "gemini-web-3.1-pro-high": "gemini-web-3.1-pro-high",
+    "gemini-web-3.1-pro-low": "gemini-web-3.1-pro-low",
+    "gemini-web-3.8-flash": "gemini-web-3.8-flash",
+    "gemini-web-3.8-flash-high": "gemini-web-3.8-flash-high",
+    "gemini-web-3.8-flash-medium": "gemini-web-3.8-flash-medium",
+    "gemini-web-3.8-flash-low": "gemini-web-3.8-flash-low",
+    "gemini-web-3.5-flash-lite": "gemini-web-3.5-flash-lite",
+    "gemini-web-flash-lite": "gemini-web-3.5-flash-lite",
     "gemini-web-argon": "gemini-web-argon",
     "gemini-argon": "gemini-web-argon",
     "gemini-3.0-argon": "gemini-web-argon",
     "gemini-3-argon": "gemini-web-argon",
     "gemini-web-3.0": "gemini-web-argon",
-    "gemini-web-pro": "gemini-web-2.5-pro",
+    "gemini-web-pro": "gemini-web-3.1-pro",
     "gemini-web-2.5-pro": "gemini-web-2.5-pro",
-    "gemini-web-flash": "gemini-web-2.5-flash",
+    "gemini-web-flash": "gemini-web-3.8-flash",
     "gemini-web-2.5-flash": "gemini-web-2.5-flash",
     "gemini-web-default": "gemini-web-default",
-    "gemini-web": "gemini-web-argon",
+    "gemini-web": "gemini-web-4-argon",
 }
 
 
@@ -117,20 +334,46 @@ def is_explicit_gemini_web_model(model_name: str) -> bool:
 def resolve_gemini_web_model(model_name: str) -> str:
     """Normalize any model identifier into a canonical GEMINI_WEB_MODELS key."""
     if not model_name:
-        return "gemini-web-argon"
+        return "gemini-web-4-argon"
     norm = model_name.strip().lower()
     if "/" in norm:
         norm = norm.split("/", 1)[1]
     if norm in GEMINI_WEB_ALIASES:
         return GEMINI_WEB_ALIASES[norm]
+    if norm in GEMINI_WEB_MODELS:
+        return norm
     # Map standard Gemini models for web_first or hybrid_failover modes
-    if "argon" in norm or "3.8-pro" in norm or "3-pro" in norm or "3.1-pro" in norm or "3.7-pro" in norm:
+    if "4-argon" in norm or "4_argon" in norm:
+        if "low" in norm:
+            return "gemini-web-4-argon-low"
+        if "medium" in norm:
+            return "gemini-web-4-argon-medium"
+        if "high" in norm:
+            return "gemini-web-4-argon-high"
+        return "gemini-web-4-argon"
+    if "argon" in norm or "3.8-pro" in norm or "3-pro" in norm or "3.7-pro" in norm:
         return "gemini-web-argon"
+    if "3.1-pro" in norm:
+        if "low" in norm:
+            return "gemini-web-3.1-pro-low"
+        if "high" in norm:
+            return "gemini-web-3.1-pro-high"
+        return "gemini-web-3.1-pro"
     if "pro" in norm:
         return "gemini-web-2.5-pro"
-    if "flash" in norm or "lite" in norm:
+    if "3.5-flash-lite" in norm or "flash-lite" in norm or "lite" in norm:
+        return "gemini-web-3.5-flash-lite"
+    if "3.8-flash" in norm:
+        if "low" in norm:
+            return "gemini-web-3.8-flash-low"
+        if "medium" in norm:
+            return "gemini-web-3.8-flash-medium"
+        if "high" in norm:
+            return "gemini-web-3.8-flash-high"
+        return "gemini-web-3.8-flash"
+    if "flash" in norm:
         return "gemini-web-2.5-flash"
-    return "gemini-web-argon"
+    return "gemini-web-4-argon"
 
 
 def resolve_web_model_family(model_name: str) -> str:
@@ -163,7 +406,7 @@ def build_model_selector_header(
                 break
 
     if not chosen_hex:
-        spec = GEMINI_WEB_MODELS.get(canonical, GEMINI_WEB_MODELS["gemini-web-argon"])
+        spec = GEMINI_WEB_MODELS.get(canonical, GEMINI_WEB_MODELS["gemini-web-4-argon"])
         chosen_hex = str(spec.get("default_hex") or "")
 
     if not chosen_hex:
@@ -197,6 +440,8 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
         result["detected_tier"] = "ultra"
     elif (
         "gemini argon" in html_lower
+        or "4 argon" in html_lower
+        or "3.1 pro" in html_lower
         or "gemini advanced" in html_lower
         or "google one ai" in html_lower
         or "google ai pro" in html_lower
@@ -205,7 +450,6 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
         result["detected_tier"] = "pro"
 
     # 3. Scrape [hex_id, display_name] pairs from inline JSON structures
-    # In Bard web responses, model descriptors appear near 16-char lowercase hex strings
     discovered_by_id: Dict[str, Dict[str, str]] = {}
     pair_pattern = re.compile(
         r'\["([0-9a-f]{16})"\s*,\s*"([^"]{2,48})"',
@@ -215,9 +459,34 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
         hex_id = m.group(1).lower()
         label = m.group(2).strip()
         label_lower = label.lower()
-        if "argon" in label_lower or "3.0" in label_lower or "ultra" in label_lower:
+        if "4 argon" in label_lower or ("argon" in label_lower and "4" in label_lower):
+            discovered_by_id["gemini-web-4-argon"] = {
+                "id": "gemini-web-4-argon",
+                "label": label,
+                "hex_id": hex_id,
+            }
             discovered_by_id["gemini-web-argon"] = {
                 "id": "gemini-web-argon",
+                "label": label,
+                "hex_id": hex_id,
+            }
+            if result["detected_tier"] == "free":
+                result["detected_tier"] = "pro"
+        elif "argon" in label_lower or "3.0" in label_lower or "ultra" in label_lower:
+            discovered_by_id["gemini-web-argon"] = {
+                "id": "gemini-web-argon",
+                "label": label,
+                "hex_id": hex_id,
+            }
+            discovered_by_id.setdefault(
+                "gemini-web-4-argon",
+                {"id": "gemini-web-4-argon", "label": label, "hex_id": hex_id},
+            )
+            if result["detected_tier"] == "free":
+                result["detected_tier"] = "pro"
+        elif "3.1" in label_lower and "pro" in label_lower:
+            discovered_by_id["gemini-web-3.1-pro"] = {
+                "id": "gemini-web-3.1-pro",
                 "label": label,
                 "hex_id": hex_id,
             }
@@ -231,6 +500,18 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
             }
             if result["detected_tier"] == "free":
                 result["detected_tier"] = "pro"
+        elif "3.5" in label_lower and ("lite" in label_lower or "flash" in label_lower):
+            discovered_by_id["gemini-web-3.5-flash-lite"] = {
+                "id": "gemini-web-3.5-flash-lite",
+                "label": label,
+                "hex_id": hex_id,
+            }
+        elif "3.8" in label_lower and "flash" in label_lower:
+            discovered_by_id["gemini-web-3.8-flash"] = {
+                "id": "gemini-web-3.8-flash",
+                "label": label,
+                "hex_id": hex_id,
+            }
         elif "flash" in label_lower:
             discovered_by_id["gemini-web-2.5-flash"] = {
                 "id": "gemini-web-2.5-flash",
@@ -238,7 +519,7 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
                 "hex_id": hex_id,
             }
 
-    # Merge discovered models with baseline defaults so all 3 primary web models are always available
+    # Merge discovered models with baseline defaults so all Web App models are always available
     merged: List[Dict[str, str]] = []
     for base_item in _default_node_models_list():
         m_id = base_item["id"]
@@ -253,6 +534,26 @@ def scrape_models_and_tier_from_html(html: str) -> Dict[str, Any]:
 
 def _default_node_models_list() -> List[Dict[str, str]]:
     return [
+        {
+            "id": "gemini-web-4-argon",
+            "label": "4 Argon",
+            "hex_id": GEMINI_WEB_MODELS["gemini-web-4-argon"]["default_hex"],
+        },
+        {
+            "id": "gemini-web-3.1-pro",
+            "label": "3.1 Pro",
+            "hex_id": GEMINI_WEB_MODELS["gemini-web-3.1-pro"]["default_hex"],
+        },
+        {
+            "id": "gemini-web-3.8-flash",
+            "label": "3.8 Flash",
+            "hex_id": GEMINI_WEB_MODELS["gemini-web-3.8-flash"]["default_hex"],
+        },
+        {
+            "id": "gemini-web-3.5-flash-lite",
+            "label": "3.5 Flash-Lite",
+            "hex_id": GEMINI_WEB_MODELS["gemini-web-3.5-flash-lite"]["default_hex"],
+        },
         {
             "id": "gemini-web-argon",
             "label": "Gemini Argon",

@@ -94,14 +94,33 @@ BACKEND_MODEL_ALIASES: Dict[str, str] = {
     "gpt-oss": "gpt-oss-120b-medium",
     "gpt-oss-120b": "gpt-oss-120b-medium",
 
-    # Gemini Web App (gemini.google.com/app) aliases
+    # Gemini 4 Argon (Code Assist)
+    "gemini-4-argon": "gemini-4-argon-high",
+    "gemini-4-argon-high": "gemini-4-argon-high",
+    "gemini-4-argon-medium": "gemini-4-argon-medium",
+    "gemini-4-argon-low": "gemini-4-argon-low",
+
+    # Gemini Web App (gemini.google.com/app) models & thinking levels
+    "gemini-web-4-argon": "gemini-web-4-argon",
+    "gemini-web-4-argon-high": "gemini-web-4-argon-high",
+    "gemini-web-4-argon-medium": "gemini-web-4-argon-medium",
+    "gemini-web-4-argon-low": "gemini-web-4-argon-low",
+    "gemini-web-3.1-pro": "gemini-web-3.1-pro",
+    "gemini-web-3.1-pro-high": "gemini-web-3.1-pro-high",
+    "gemini-web-3.1-pro-low": "gemini-web-3.1-pro-low",
+    "gemini-web-3.8-flash": "gemini-web-3.8-flash",
+    "gemini-web-3.8-flash-high": "gemini-web-3.8-flash-high",
+    "gemini-web-3.8-flash-medium": "gemini-web-3.8-flash-medium",
+    "gemini-web-3.8-flash-low": "gemini-web-3.8-flash-low",
+    "gemini-web-3.5-flash-lite": "gemini-web-3.5-flash-lite",
     "gemini-web-argon": "gemini-web-argon",
-    "gemini-argon": "gemini-web-argon",
+    "gemini-argon": "gemini-web-4-argon",
     "gemini-3.0-argon": "gemini-web-argon",
     "gemini-web-2.5-pro": "gemini-web-2.5-pro",
-    "gemini-web-pro": "gemini-web-2.5-pro",
+    "gemini-web-pro": "gemini-web-3.1-pro",
     "gemini-web-2.5-flash": "gemini-web-2.5-flash",
-    "gemini-web-flash": "gemini-web-2.5-flash",
+    "gemini-web-flash": "gemini-web-3.8-flash",
+    "gemini-web-flash-lite": "gemini-web-3.5-flash-lite",
     "gemini-web-default": "gemini-web-default",
 }
 
@@ -503,6 +522,186 @@ BASELINE_MODELS: Dict[str, Dict[str, Any]] = {
         "model": "MODEL_PLACEHOLDER_M187",
         "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
     },
+    "gemini-4-argon-high": {
+        "displayName": "Gemini 4 Argon (High)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M417",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-4-argon-medium": {
+        "displayName": "Gemini 4 Argon (Medium)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M418",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-4-argon-low": {
+        "displayName": "Gemini 4 Argon (Low)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_PLACEHOLDER_M419",
+        "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-web-4-argon": {
+        "displayName": "Gemini 4 Argon (Web App — Nhiệm vụ phức tạp)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-4-argon-high": {
+        "displayName": "Gemini 4 Argon High (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON_HIGH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-4-argon-medium": {
+        "displayName": "Gemini 4 Argon Medium (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON_MEDIUM",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-4-argon-low": {
+        "displayName": "Gemini 4 Argon Low (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_4_ARGON_LOW",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.1-pro": {
+        "displayName": "Gemini 3.1 Pro (Web App — Suy luận nâng cao)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_31_PRO",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.1-pro-high": {
+        "displayName": "Gemini 3.1 Pro High (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_31_PRO_HIGH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.1-pro-low": {
+        "displayName": "Gemini 3.1 Pro Low (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_31_PRO_LOW",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.8-flash": {
+        "displayName": "Gemini 3.8 Flash (Web App — Trợ giúp toàn diện)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.8-flash-high": {
+        "displayName": "Gemini 3.8 Flash High (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH_HIGH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.8-flash-medium": {
+        "displayName": "Gemini 3.8 Flash Medium (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 4000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH_MEDIUM",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.8-flash-low": {
+        "displayName": "Gemini 3.8 Flash Low (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": 1000,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_38_FLASH_LOW",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-3.5-flash-lite": {
+        "displayName": "Gemini 3.5 Flash-Lite (Web App — Nhanh nhất)",
+        "supportsImages": True,
+        "supportsThinking": False,
+        "thinkingBudget": 0,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_35_FLASH_LITE",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
     "gemini-web-argon": {
         "displayName": "Gemini Argon (Web App Pro/Ultra)",
         "supportsImages": True,
@@ -894,9 +1093,33 @@ class ModelDiscoveryManager:
         """Return parsed DiscoveredModel objects."""
         raw_models = dict(self.fetch_models(force_refresh=force_refresh) or {})
         if isinstance(getattr(self.auth_manager, "auth_file", None), Path):
-            for gweb_id in ("gemini-web-argon", "gemini-web-2.5-pro", "gemini-web-2.5-flash"):
-                if gweb_id not in raw_models and gweb_id in BASELINE_MODELS:
-                    raw_models[gweb_id] = BASELINE_MODELS[gweb_id]
+            for k, v in BASELINE_MODELS.items():
+                if k.startswith("gemini-web-") and k not in raw_models:
+                    raw_models[k] = v
+            try:
+                pool_file = get_hermes_dir() / "gemini_web_pool.json"
+                if pool_file.is_file():
+                    with open(pool_file, "r", encoding="utf-8") as pf:
+                        pdata = json.load(pf)
+                    for node in (pdata.get("nodes") or []) if isinstance(pdata, dict) else []:
+                        for m_item in (node.get("available_models") or []) if isinstance(node, dict) else []:
+                            if isinstance(m_item, dict) and m_item.get("id"):
+                                mid = str(m_item["id"]).strip()
+                                if mid.startswith("gemini-web-") and mid not in raw_models:
+                                    raw_models[mid] = {
+                                        "displayName": m_item.get("display_name") or mid,
+                                        "supportsImages": True,
+                                        "supportsThinking": "lite" not in mid,
+                                        "thinkingBudget": -1,
+                                        "minThinkingBudget": 32,
+                                        "maxTokens": 1048576,
+                                        "maxOutputTokens": 65536,
+                                        "recommended": True,
+                                        "model": f"MODEL_{mid.upper().replace('-', '_').replace('.', '_')}",
+                                        "apiProvider": "API_PROVIDER_GEMINI_WEB",
+                                    }
+            except Exception:
+                pass
         models_list: List[DiscoveredModel] = []
 
         for model_id, m in raw_models.items():

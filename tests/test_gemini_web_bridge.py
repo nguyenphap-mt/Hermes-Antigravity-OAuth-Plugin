@@ -186,6 +186,26 @@ def test_build_model_selector_header():
     parsed = json.loads(hdr)
     assert parsed[4] == GEMINI_WEB_MODELS["gemini-web-argon"]["default_hex"]
 
+    # Verify full 2026 Gemini Web App model lineup (4 Argon, 3.1 Pro, 3.8 Flash, 3.5 Flash-Lite + thinking levels)
+    for web_mid in (
+        "gemini-web-4-argon",
+        "gemini-web-4-argon-high",
+        "gemini-web-4-argon-medium",
+        "gemini-web-4-argon-low",
+        "gemini-web-3.1-pro",
+        "gemini-web-3.1-pro-high",
+        "gemini-web-3.1-pro-low",
+        "gemini-web-3.8-flash",
+        "gemini-web-3.8-flash-high",
+        "gemini-web-3.8-flash-medium",
+        "gemini-web-3.8-flash-low",
+        "gemini-web-3.5-flash-lite",
+    ):
+        assert web_mid in GEMINI_WEB_MODELS
+        assert is_explicit_gemini_web_model(web_mid) is True
+        assert resolve_gemini_web_model(web_mid) == web_mid
+        assert build_model_selector_header(web_mid) is not None
+
     # Default UI model omits custom hex header
     assert build_model_selector_header("gemini-web-default") is None
     assert is_explicit_gemini_web_model("gemini-web-argon") is True
