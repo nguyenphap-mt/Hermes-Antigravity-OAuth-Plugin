@@ -103,6 +103,7 @@ class DaemonControlResponse(BaseModel):
 
 
 class AccountItem(BaseModel):
+    model_config = {"protected_namespaces": ()}
     email: str
     role: str = "all"
     status: str = "active"
@@ -117,6 +118,8 @@ class AccountItem(BaseModel):
     plan_type: str = "free"  # "ultra" | "pro" | "free"
     tier_id: Optional[str] = ""
     quota_summary: Optional[Dict[str, Any]] = None
+    model_cooldowns: Optional[Dict[str, int]] = None
+    health_score: Optional[float] = None
 
 
 class AccountPoolResponse(BaseModel):
@@ -375,8 +378,8 @@ async def control_daemon(req: DaemonControlRequest):
             sys.executable,
             "-u",
             "-c",
-            f"import sys; sys.path.insert(0, r'{_PLUGIN_ROOT}'); sys.path.insert(0, r'{_REPO_ROOT}'); "
-            f"from tools.antigravity_bridge.server import run_server; run_server(host='{host}', port={port})",
+            f"import sys; sys.path.insert(0, {repr(str(_PLUGIN_ROOT))}); sys.path.insert(0, {repr(str(_REPO_ROOT))}); "
+            f"from tools.antigravity_bridge.server import run_server; run_server(host={repr(str(host))}, port={int(port)})",
         ]
         flags = 0
         if sys.platform == "win32":
@@ -397,6 +400,11 @@ async def control_daemon(req: DaemonControlRequest):
         except Exception as e:
             logger.error(f"Failed to spawn daemon: {e}")
             return False
+        finally:
+            try:
+                log_fd.close()
+            except Exception:
+                pass
 
         deadline = time.time() + 8.0
         while time.time() < deadline:
@@ -453,6 +461,23 @@ async def get_accounts():
             plan_name = "Free Tier"
             plan_type = "free"
         quota_summary = getattr(acc, "quota_summary", None) or None
+        raw_mc = getattr(acc, "model_cooldowns", None)
+        model_cds: Optional[Dict[str, int]] = None
+        if isinstance(raw_mc, dict) and raw_mc:
+            active_mc = {
+                str(k): max(0, int(float(v) - now))
+                for k, v in raw_mc.items()
+                if v is not None and float(v) > now
+            }
+            if active_mc:
+                model_cds = active_mc
+        health_score: Optional[float] = None
+        if hasattr(acc, "compute_routing_health_score"):
+            try:
+                in_flight = pool.get_in_flight_count(acc.email) if hasattr(pool, "get_in_flight_count") else 0
+                health_score = float(acc.compute_routing_health_score("", in_flight=in_flight))
+            except Exception:
+                health_score = None
         items.append(AccountItem(
             email=acc.email,
             role=role,
@@ -468,6 +493,8 @@ async def get_accounts():
             plan_type=plan_type,
             tier_id=tier_id,
             quota_summary=quota_summary,
+            model_cooldowns=model_cds,
+            health_score=health_score,
         ))
 
     items.sort(

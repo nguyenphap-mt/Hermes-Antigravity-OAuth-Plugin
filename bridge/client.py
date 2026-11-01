@@ -847,78 +847,123 @@ class AntigravityClient:
     async def close(self) -> None:
         await self._http.aclose()
 
+    def _select_attempt_credentials(
+        self,
+        attempt: int,
+        bearer_token: str,
+        attempted_emails: set,
+        requested_model: str,
+    ):
+        """Resolve credentials for a request attempt via Quota-Aware Account Pool unless pinned by explicit email."""
+        explicit_email_pin = bearer_token.strip() if (bearer_token and "@" in bearer_token) else ""
+        if attempt == 0 and explicit_email_pin:
+            return self.auth_manager.resolve_valid_credentials(bearer_token=explicit_email_pin)
+
+        try:
+            chosen_acc = self.account_pool.get_account_for_service(
+                "llm",
+                exclude_emails=attempted_emails if attempted_emails else None,
+                model=requested_model,
+            )
+        except TypeError:
+            chosen_acc = self.account_pool.get_account_for_service(
+                "llm",
+                exclude_emails=attempted_emails if attempted_emails else None,
+            )
+
+        if chosen_acc:
+            return self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
+        if not attempted_emails:
+            return self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token or "")
+        return None
+
+    def _extract_response_headers_dict(self, resp: Any) -> Dict[str, Any]:
+        """Safely convert httpx/mock response headers to dict for Retry-After parsing."""
+        raw_hdrs = getattr(resp, "headers", None)
+        if isinstance(raw_hdrs, dict):
+            return raw_hdrs
+        if raw_hdrs is not None and hasattr(raw_hdrs, "items"):
+            try:
+                return dict(raw_hdrs.items())
+            except Exception:
+                return {}
+        return {}
+
     async def create_chat_completion(
         self,
         openai_payload: Dict[str, Any],
         bearer_token: str = "",
     ) -> Dict[str, Any]:
-        """Execute a non-streaming chat completion with multi-account auto-failover."""
+        """Execute a non-streaming chat completion with multi-account quota-aware auto-failover."""
+        try:
+            from tools.antigravity_bridge.account_pool import parse_retry_after_seconds
+        except ImportError:
+            from .account_pool import parse_retry_after_seconds
+
         attempted_emails = set()
         accounts = self.account_pool.list_accounts()
         max_attempts = max(1, len(accounts))
         last_error = None
+        requested_model = str(openai_payload.get("model") or "gemini-3.7-flash")
 
         for attempt in range(max_attempts):
-            if attempt == 0 and bearer_token:
-                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
-            else:
-                if attempted_emails:
-                    next_acc = self.account_pool.get_account_for_service("llm", exclude_emails=attempted_emails)
-                    if not next_acc:
-                        break
-                    creds = self.auth_manager.resolve_valid_credentials(bearer_token=next_acc.email)
-                else:
-                    chosen_acc = self.account_pool.get_account_for_service("llm")
-                    if chosen_acc:
-                        creds = self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
-                    else:
-                        creds = self.auth_manager.resolve_valid_credentials(bearer_token="")
-
+            creds = self._select_attempt_credentials(
+                attempt=attempt,
+                bearer_token=bearer_token,
+                attempted_emails=attempted_emails,
+                requested_model=requested_model,
+            )
             if not creds:
                 break
 
             current_email = (creds.email or "default").strip().lower()
             attempted_emails.add(current_email)
 
-            # Apply micro-spacing guard to avoid rapid concurrency bursts
-            self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
+            if hasattr(self.account_pool, "acquire_lease"):
+                self.account_pool.acquire_lease(current_email)
 
-            raw_eff = getattr(creds, "effective_project_id", None)
-            effective_project_id = (
-                raw_eff
-                if isinstance(raw_eff, str) and raw_eff.strip()
-                else (
-                    creds.project_id
-                    if isinstance(getattr(creds, "project_id", None), str) and creds.project_id.strip()
-                    else DEFAULT_PROJECT_ID
+            try:
+                # Apply non-blocking async micro-spacing guard to avoid rapid concurrency bursts
+                if hasattr(self.account_pool, "enforce_micro_spacing_async"):
+                    await self.account_pool.enforce_micro_spacing_async(current_email, min_interval=1.0)
+                else:
+                    self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
+
+                raw_eff = getattr(creds, "effective_project_id", None)
+                effective_project_id = (
+                    raw_eff
+                    if isinstance(raw_eff, str) and raw_eff.strip()
+                    else (
+                        creds.project_id
+                        if isinstance(getattr(creds, "project_id", None), str) and creds.project_id.strip()
+                        else DEFAULT_PROJECT_ID
+                    )
                 )
-            )
-            prompt_id = str(uuid.uuid4())
-            try:
+                prompt_id = str(uuid.uuid4())
                 try:
-                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                except ImportError:
-                    from .fingerprint import AntigravityFingerprint
-                trajectory_id = AntigravityFingerprint.get_trajectory_id()
-            except Exception:
-                trajectory_id = str(uuid.uuid4())
+                    try:
+                        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                    except ImportError:
+                        from .fingerprint import AntigravityFingerprint
+                    trajectory_id = AntigravityFingerprint.get_trajectory_id()
+                except Exception:
+                    trajectory_id = str(uuid.uuid4())
 
-            envelope = build_code_assist_request(
-                openai_payload,
-                effective_project_id,
-                self.model_discovery,
-                prompt_id=prompt_id,
-                trajectory_id=trajectory_id,
-            )
-            headers = build_antigravity_headers(
-                creds.access_token,
-                effective_project_id,
-                prompt_id=prompt_id,
-                trajectory_id=trajectory_id,
-            )
+                envelope = build_code_assist_request(
+                    openai_payload,
+                    effective_project_id,
+                    self.model_discovery,
+                    prompt_id=prompt_id,
+                    trajectory_id=trajectory_id,
+                )
+                headers = build_antigravity_headers(
+                    creds.access_token,
+                    effective_project_id,
+                    prompt_id=prompt_id,
+                    trajectory_id=trajectory_id,
+                )
 
-            url = f"{CODE_ASSIST_BASE_URL}:generateContent"
-            try:
+                url = f"{CODE_ASSIST_BASE_URL}:generateContent"
                 resp = await self._http.post(url, json=envelope, headers=headers)
                 if resp.status_code in {404, 500, 502, 503, 504}:
                     logger.warning("Primary Code Assist endpoint returned %s, trying fallback", resp.status_code)
@@ -937,9 +982,11 @@ class AntigravityClient:
                             break
 
                 if resp.status_code == 200:
-                    self.account_pool.record_account_usage(current_email, success=True)
+                    try:
+                        self.account_pool.record_account_usage(current_email, success=True, model=requested_model)
+                    except TypeError:
+                        self.account_pool.record_account_usage(current_email, success=True)
                     gemini_data = resp.json()
-                    requested_model = openai_payload.get("model") or "gemini-3.7-flash"
                     return translate_gemini_to_openai_response(gemini_data, requested_model)
 
                 error_body = resp.text or ""
@@ -958,9 +1005,21 @@ class AntigravityClient:
                             current_email, reason="HTTP 403 TOS_VIOLATION", cooldown_seconds=86400.0
                         )
                 elif resp.status_code in {429, 403, 503}:
-                    self.account_pool.mark_account_exhausted(
-                        current_email, reason=f"HTTP {resp.status_code}"
+                    retry_after = parse_retry_after_seconds(
+                        error_body,
+                        headers=self._extract_response_headers_dict(resp),
                     )
+                    try:
+                        self.account_pool.mark_account_exhausted(
+                            current_email,
+                            reason=f"HTTP {resp.status_code}: {error_body[:300]}",
+                            model=requested_model,
+                            retry_after=retry_after,
+                        )
+                    except TypeError:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=f"HTTP {resp.status_code}"
+                        )
 
                 is_failover_code = resp.status_code in {429, 403, 503}
                 if is_failover_code and attempt < max_attempts - 1:
@@ -971,7 +1030,10 @@ class AntigravityClient:
                     last_error = f"HTTP {resp.status_code}: {error_body}"
                     continue
                 else:
-                    self.account_pool.record_account_usage(current_email, success=False)
+                    try:
+                        self.account_pool.record_account_usage(current_email, success=False, model=requested_model)
+                    except TypeError:
+                        self.account_pool.record_account_usage(current_email, success=False)
                     raise RuntimeError(
                         f"Antigravity Code Assist failed with HTTP {resp.status_code}: {error_body}"
                     )
@@ -982,11 +1044,19 @@ class AntigravityClient:
                         "Attempt %d failed on account '%s' (%s), failing over...",
                         attempt + 1, current_email, e
                     )
-                    self.account_pool.mark_account_exhausted(
-                        current_email, reason=str(e)
-                    )
+                    try:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=str(e), model=requested_model
+                        )
+                    except TypeError:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=str(e)
+                        )
                     continue
                 raise
+            finally:
+                if hasattr(self.account_pool, "release_lease"):
+                    self.account_pool.release_lease(current_email)
 
         raise RuntimeError(f"All Antigravity accounts in pool exhausted. Last error: {last_error}")
 
@@ -995,78 +1065,80 @@ class AntigravityClient:
         openai_payload: Dict[str, Any],
         bearer_token: str = "",
     ) -> AsyncIterator[str]:
-        """Stream chat completion as Server-Sent Events (SSE) with auto-failover on stream connection."""
+        """Stream chat completion as Server-Sent Events (SSE) with quota-aware auto-failover."""
+        try:
+            from tools.antigravity_bridge.account_pool import parse_retry_after_seconds
+        except ImportError:
+            from .account_pool import parse_retry_after_seconds
+
         attempted_emails = set()
         accounts = self.account_pool.list_accounts()
         max_attempts = max(1, len(accounts))
         last_error = None
 
         stream_id = f"chatcmpl-{uuid.uuid4().hex}"
-        requested_model = openai_payload.get("model") or "gemini-3.7-flash"
+        requested_model = str(openai_payload.get("model") or "gemini-3.7-flash")
 
         for attempt in range(max_attempts):
-            if attempt == 0 and bearer_token:
-                creds = self.auth_manager.resolve_valid_credentials(bearer_token=bearer_token)
-            else:
-                if attempted_emails:
-                    next_acc = self.account_pool.get_account_for_service("llm", exclude_emails=attempted_emails)
-                    if not next_acc:
-                        break
-                    creds = self.auth_manager.resolve_valid_credentials(bearer_token=next_acc.email)
-                else:
-                    chosen_acc = self.account_pool.get_account_for_service("llm")
-                    if chosen_acc:
-                        creds = self.auth_manager.resolve_valid_credentials(bearer_token=chosen_acc.email)
-                    else:
-                        creds = self.auth_manager.resolve_valid_credentials(bearer_token="")
-
+            creds = self._select_attempt_credentials(
+                attempt=attempt,
+                bearer_token=bearer_token,
+                attempted_emails=attempted_emails,
+                requested_model=requested_model,
+            )
             if not creds:
                 break
 
             current_email = (creds.email or "default").strip().lower()
             attempted_emails.add(current_email)
 
-            # Apply micro-spacing guard
-            self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
+            if hasattr(self.account_pool, "acquire_lease"):
+                self.account_pool.acquire_lease(current_email)
 
-            raw_eff = getattr(creds, "effective_project_id", None)
-            effective_project_id = (
-                raw_eff
-                if isinstance(raw_eff, str) and raw_eff.strip()
-                else (
-                    creds.project_id
-                    if isinstance(getattr(creds, "project_id", None), str) and creds.project_id.strip()
-                    else DEFAULT_PROJECT_ID
+            try:
+                # Apply non-blocking async micro-spacing guard
+                if hasattr(self.account_pool, "enforce_micro_spacing_async"):
+                    await self.account_pool.enforce_micro_spacing_async(current_email, min_interval=1.0)
+                else:
+                    self.account_pool.enforce_micro_spacing(current_email, min_interval=1.0)
+
+                raw_eff = getattr(creds, "effective_project_id", None)
+                effective_project_id = (
+                    raw_eff
+                    if isinstance(raw_eff, str) and raw_eff.strip()
+                    else (
+                        creds.project_id
+                        if isinstance(getattr(creds, "project_id", None), str) and creds.project_id.strip()
+                        else DEFAULT_PROJECT_ID
+                    )
                 )
-            )
-            prompt_id = str(uuid.uuid4())
-            try:
+                prompt_id = str(uuid.uuid4())
                 try:
-                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                except ImportError:
-                    from .fingerprint import AntigravityFingerprint
-                trajectory_id = AntigravityFingerprint.get_trajectory_id()
-            except Exception:
-                trajectory_id = str(uuid.uuid4())
+                    try:
+                        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                    except ImportError:
+                        from .fingerprint import AntigravityFingerprint
+                    trajectory_id = AntigravityFingerprint.get_trajectory_id()
+                except Exception:
+                    trajectory_id = str(uuid.uuid4())
 
-            envelope = build_code_assist_request(
-                openai_payload,
-                effective_project_id,
-                self.model_discovery,
-                prompt_id=prompt_id,
-                trajectory_id=trajectory_id,
-            )
-            headers = build_antigravity_headers(
-                creds.access_token,
-                effective_project_id,
-                prompt_id=prompt_id,
-                trajectory_id=trajectory_id,
-            )
-            headers["Accept"] = "text/event-stream"
+                envelope = build_code_assist_request(
+                    openai_payload,
+                    effective_project_id,
+                    self.model_discovery,
+                    prompt_id=prompt_id,
+                    trajectory_id=trajectory_id,
+                )
+                headers = build_antigravity_headers(
+                    creds.access_token,
+                    effective_project_id,
+                    prompt_id=prompt_id,
+                    trajectory_id=trajectory_id,
+                )
+                headers["Accept"] = "text/event-stream"
 
-            url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
+                url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
 
-            try:
                 response = await self._http.send(
                     self._http.build_request("POST", url, json=envelope, headers=headers),
                     stream=True,
@@ -1080,7 +1152,10 @@ class AntigravityClient:
                     )
 
                 if response.status_code == 200:
-                    self.account_pool.record_account_usage(current_email, success=True)
+                    try:
+                        self.account_pool.record_account_usage(current_email, success=True, model=requested_model)
+                    except TypeError:
+                        self.account_pool.record_account_usage(current_email, success=True)
                     initial_chunk = {
                         "id": stream_id,
                         "object": "chat.completion.chunk",
@@ -1143,9 +1218,21 @@ class AntigravityClient:
                                 current_email, reason="HTTP 403 TOS_VIOLATION", cooldown_seconds=86400.0
                             )
                     elif response.status_code in {429, 403, 503}:
-                        self.account_pool.mark_account_exhausted(
-                            current_email, reason=f"HTTP {response.status_code}"
+                        retry_after = parse_retry_after_seconds(
+                            body_text,
+                            headers=self._extract_response_headers_dict(response),
                         )
+                        try:
+                            self.account_pool.mark_account_exhausted(
+                                current_email,
+                                reason=f"HTTP {response.status_code}: {body_text[:300]}",
+                                model=requested_model,
+                                retry_after=retry_after,
+                            )
+                        except TypeError:
+                            self.account_pool.mark_account_exhausted(
+                                current_email, reason=f"HTTP {response.status_code}"
+                            )
                     is_failover_code = response.status_code in {429, 403, 503}
                     if is_failover_code and attempt < max_attempts - 1:
                         logger.warning(
@@ -1155,7 +1242,10 @@ class AntigravityClient:
                         last_error = f"HTTP {response.status_code}: {body_text}"
                         continue
                     else:
-                        self.account_pool.record_account_usage(current_email, success=False)
+                        try:
+                            self.account_pool.record_account_usage(current_email, success=False, model=requested_model)
+                        except TypeError:
+                            self.account_pool.record_account_usage(current_email, success=False)
                         raise RuntimeError(
                             f"Antigravity Code Assist streaming failed with HTTP {response.status_code}: {body_text}"
                         )
@@ -1166,10 +1256,18 @@ class AntigravityClient:
                         "Stream attempt %d failed on account '%s' (%s), failing over...",
                         attempt + 1, current_email, e
                     )
-                    self.account_pool.mark_account_exhausted(
-                        current_email, reason=str(e)
-                    )
+                    try:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=str(e), model=requested_model
+                        )
+                    except TypeError:
+                        self.account_pool.mark_account_exhausted(
+                            current_email, reason=str(e)
+                        )
                     continue
                 raise
+            finally:
+                if hasattr(self.account_pool, "release_lease"):
+                    self.account_pool.release_lease(current_email)
 
         raise RuntimeError(f"All Antigravity accounts exhausted for streaming. Last error: {last_error}")

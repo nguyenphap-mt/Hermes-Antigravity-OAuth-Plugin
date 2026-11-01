@@ -191,10 +191,15 @@
         document.getElementById('userEmail').innerText = data.email || 'user@example.com';
         document.getElementById('creditsCount').innerText = data.credits || 1036;
 
-        if (data.user_image) {
-          document.getElementById('userAvatar').innerHTML = `<img src="${data.user_image}" class="w-full h-full object-cover">`;
+        const avatarEl = document.getElementById('userAvatar');
+        if (data.user_image && /^https?:\/\//i.test(String(data.user_image))) {
+          const img = document.createElement('img');
+          img.src = String(data.user_image);
+          img.className = 'w-full h-full object-cover';
+          img.alt = 'User Avatar';
+          avatarEl.replaceChildren(img);
         } else if (data.email) {
-          document.getElementById('userAvatar').innerText = data.email[0].toUpperCase();
+          avatarEl.innerText = data.email[0].toUpperCase();
         }
 
         if (data.is_expired) {

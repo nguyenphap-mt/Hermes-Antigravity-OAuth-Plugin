@@ -14,15 +14,18 @@ for Google Antigravity OAuth accounts:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -51,6 +54,84 @@ def _get_hermes_auth_dir() -> Path:
 
 DEFAULT_TOKENS_FILE = _get_hermes_auth_dir() / "antigravity_tokens.json"
 DEFAULT_COOLDOWN_SECONDS = 900.0  # 15 minutes default cooldown on 429/quota exhaustion
+SOFT_QUOTA_HIGH_WATER_MARK_PCT = 10.0  # Proactive switch threshold when remaining quota <= 10%
+PLAN_WEIGHTS: Dict[str, float] = {
+    "ultra": 1.5,
+    "pro": 1.25,
+    "free": 1.0,
+}
+
+
+def resolve_model_family(model_id: str = "") -> str:
+    """Resolve model identifier into quota bucket family ('claude', 'gemini', or 'all')."""
+    if not model_id or not str(model_id).strip():
+        return "all"
+    m = str(model_id).strip().lower()
+    if any(tok in m for tok in ("claude", "gpt", "o1", "o3", "3p", "anthropic")):
+        return "claude"
+    return "gemini"
+
+
+def parse_retry_after_seconds(
+    error_body: str = "",
+    headers: Optional[Dict[str, Any]] = None,
+    reset_time_iso: Optional[str] = None,
+) -> Optional[float]:
+    """Extract exact server-reported retry cooldown in seconds from headers, Google RPC details, or ISO resetTime."""
+    candidates: List[float] = []
+
+    # 1. Check HTTP Retry-After header
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if str(k).strip().lower() == "retry-after" and v is not None:
+                raw_val = str(v).strip()
+                try:
+                    sec = float(raw_val)
+                    if sec > 0:
+                        candidates.append(sec)
+                except ValueError:
+                    pass
+
+    # 2. Check Google RPC RetryInfo / ErrorInfo JSON or text body
+    body_str = str(error_body or "")
+    if body_str:
+        # Match "retryDelay": "75.5s" or "quotaResetDelay": "120s"
+        for match in re.finditer(r'"(?:retryDelay|quotaResetDelay)"\s*:\s*"([0-9]+(?:\.[0-9]+)?)s"', body_str):
+            try:
+                sec = float(match.group(1))
+                if sec > 0:
+                    candidates.append(sec)
+            except ValueError:
+                pass
+
+        # Match ISO timestamp in quotaResetTimeStamp or resetTime
+        if not reset_time_iso:
+            iso_match = re.search(
+                r'"(?:quotaResetTimeStamp|resetTime)"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+)"',
+                body_str,
+            )
+            if iso_match:
+                reset_time_iso = iso_match.group(1)
+
+    # 3. Check explicit ISO-8601 resetTime
+    if reset_time_iso:
+        try:
+            iso_clean = str(reset_time_iso).strip()
+            if iso_clean.endswith("Z"):
+                iso_clean = iso_clean[:-1] + "+00:00"
+            dt = datetime.fromisoformat(iso_clean)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            delta = dt.timestamp() - time.time()
+            if delta > 0:
+                candidates.append(delta)
+        except Exception:
+            pass
+
+    if not candidates:
+        return None
+    best = max(candidates)
+    return max(1.0, min(best, 86400.0))
 
 
 @dataclass
@@ -76,6 +157,7 @@ class AntigravityAccount:
     plan_name: str = ""                     # 'Google AI Ultra', 'Google AI Pro', 'Free Tier'
     plan_type: str = "free"                 # 'ultra', 'pro', 'free'
     quota_summary: Dict[str, Any] = field(default_factory=dict)
+    model_cooldowns: Dict[str, float] = field(default_factory=dict)
 
     @property
     def computed_plan_type(self) -> str:
@@ -148,6 +230,56 @@ class AntigravityAccount:
             return False
         return True
 
+    def is_available_for_model(self, model_id: str = "") -> bool:
+        """Check if account is available for a specific model family ('claude' vs 'gemini')."""
+        if self.status == "disabled":
+            return False
+        now = time.time()
+        family = resolve_model_family(model_id)
+        active_family_cds = {
+            k: float(v)
+            for k, v in (self.model_cooldowns or {}).items()
+            if v is not None and float(v) > now
+        }
+        if family in {"claude", "gemini"}:
+            if family in active_family_cds:
+                return False
+            if active_family_cds:
+                # Cooldown is scoped to another model family; this family remains available
+                return True
+        return self.is_available
+
+    def get_remaining_quota_pct(self, model_id: str = "") -> float:
+        """Return bottleneck remaining quota percentage (0..100) for the target model family."""
+        qs = self.quota_summary or {}
+        if not isinstance(qs, dict) or not qs:
+            return 100.0
+        family = resolve_model_family(model_id)
+        if family == "claude":
+            keys = ("claude_5h_pct", "claude_weekly_pct")
+        elif family == "gemini":
+            keys = ("gemini_5h_pct", "gemini_weekly_pct")
+        else:
+            keys = ("claude_5h_pct", "claude_weekly_pct", "gemini_5h_pct", "gemini_weekly_pct")
+
+        vals: List[float] = []
+        for k in keys:
+            v = qs.get(k)
+            if v is not None:
+                try:
+                    vals.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+        return min(vals) if vals else 100.0
+
+    def compute_routing_health_score(self, model_id: str = "", in_flight: int = 0) -> float:
+        """Compute composite routing score combining remaining quota %, plan tier weight, and in-flight load."""
+        rem_pct = self.get_remaining_quota_pct(model_id)
+        plan_weight = PLAN_WEIGHTS.get(self.computed_plan_type, 1.0)
+        base_score = rem_pct * plan_weight
+        penalty = (max(0, int(in_flight)) * 25.0) + (max(0, int(self.consecutive_429_count)) * 20.0)
+        return round(base_score - penalty, 2)
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["updated_at"] = time.time()
@@ -175,6 +307,16 @@ class AntigravityAccount:
             plan_type = "free"
             plan_name = raw_plan_name or "Free Tier"
 
+        raw_mc = data.get("model_cooldowns")
+        model_cooldowns: Dict[str, float] = {}
+        if isinstance(raw_mc, dict):
+            for k, v in raw_mc.items():
+                if v is not None:
+                    try:
+                        model_cooldowns[str(k).strip().lower()] = float(v)
+                    except (TypeError, ValueError):
+                        pass
+
         return cls(
             email=email,
             access_token=str(data.get("access_token", "")),
@@ -195,6 +337,7 @@ class AntigravityAccount:
             plan_name=plan_name,
             plan_type=plan_type,
             quota_summary=dict(data.get("quota_summary", {}) or {}) if isinstance(data.get("quota_summary"), dict) else {},
+            model_cooldowns=model_cooldowns,
         )
 
 
@@ -332,10 +475,8 @@ class AntigravityAccountPoolManager:
         else:
             return 900.0
 
-    def enforce_micro_spacing(self, email: str, min_interval: float = 1.8) -> float:
-        """Enforce minimal inter-request delay with natural jitter to prevent burst 429s.
-        Returns the delay slept in seconds.
-        """
+    def _reserve_micro_spacing_delay(self, email: str, min_interval: float = 1.8) -> Tuple[str, float]:
+        """Compute and reserve the next request slot timestamp inside lock without sleeping."""
         import random
         target = email.strip().lower()
         delay = 0.0
@@ -356,11 +497,24 @@ class AntigravityAccountPoolManager:
 
             new_timestamp = now + delay
             self._last_request_times[target] = new_timestamp
+        return target, delay
 
+    def enforce_micro_spacing(self, email: str, min_interval: float = 1.8) -> float:
+        """Enforce minimal inter-request delay with natural jitter to prevent burst 429s.
+        Returns the delay slept in seconds.
+        """
+        target, delay = self._reserve_micro_spacing_delay(email, min_interval=min_interval)
         if delay > 0.0:
             logger.info("Micro-spacing guard: pacing account '%s' by %.2fs to prevent burst 429", target, delay)
             time.sleep(delay)
+        return delay
 
+    async def enforce_micro_spacing_async(self, email: str, min_interval: float = 1.0) -> float:
+        """Asynchronously enforce minimal inter-request delay without blocking the asyncio event loop."""
+        target, delay = self._reserve_micro_spacing_delay(email, min_interval=min_interval)
+        if delay > 0.0:
+            logger.info("Async micro-spacing guard: pacing account '%s' by %.2fs to prevent burst 429", target, delay)
+            await asyncio.sleep(delay)
         return delay
 
     def acquire_lease(self, email: str) -> int:
@@ -401,9 +555,17 @@ class AntigravityAccountPoolManager:
                 if not isinstance(acct_dict, dict):
                     continue
                 acc = AntigravityAccount.from_dict(acct_dict)
+                # Clean up expired model_cooldowns
+                if acc.model_cooldowns:
+                    active_cds = {k: v for k, v in acc.model_cooldowns.items() if v and now < float(v)}
+                    if len(active_cds) != len(acc.model_cooldowns):
+                        acc.model_cooldowns = active_cds
+                        raw_accs[email_key]["model_cooldowns"] = active_cds
+                        modified = True
+
                 # Auto-recover if cooldown has expired (never auto-recover 'disabled')
                 if acc.status in {"exhausted", "cooling_down"} and acc.exhausted_until:
-                    if now >= acc.exhausted_until:
+                    if now >= acc.exhausted_until and not acc.model_cooldowns:
                         acc.status = "active"
                         acc.exhausted_until = None
                         raw_accs[email_key]["status"] = "active"
@@ -469,13 +631,18 @@ class AntigravityAccountPoolManager:
             logger.info("Switched active Antigravity account to: %s", target)
             return True
 
+    def _score_account(self, acc: AntigravityAccount, model: str = "") -> float:
+        """Helper to compute account routing health score with live in-flight count."""
+        return acc.compute_routing_health_score(model, in_flight=self.get_in_flight_count(acc.email))
+
     def get_account_for_service(
         self,
         service_type: str = "all",  # 'llm', 'image_gen', 'all'
         exclude_emails: Optional[Set[str]] = None,
+        model: str = "",
     ) -> Optional[AntigravityAccount]:
-        """Select optimal account tailored for service type with Task-Based Sharding.
-        Strictly enforces cooldown and disabled states — returns None if no account is available.
+        """Select optimal account tailored for service type and model family with Quota-Aware Routing.
+        Strictly enforces cooldown, model-family availability, and soft high-water mark (10%).
         """
         exclude = {e.lower().strip() for e in (exclude_emails or set())}
         accounts = [a for a in self.list_accounts() if a.email not in exclude]
@@ -484,58 +651,83 @@ class AntigravityAccountPoolManager:
 
         strategy = self.get_rotation_strategy()
 
-        ready_accounts = [a for a in accounts if a.is_available]
+        ready_accounts = [a for a in accounts if a.is_available_for_model(model)]
         if not ready_accounts:
             return None
 
-        if strategy == "sharded":
-            if len(ready_accounts) >= 2:
-                # Deterministic sorting so primary/secondary are stable
-                ready_accounts.sort(key=lambda a: a.email)
-                if service_type == "image_gen":
-                    for a in ready_accounts:
-                        if a.assigned_role == "image_gen":
-                            return a
-                    # Default: Secondary account (index 1) for image_gen
-                    return ready_accounts[1]
-                elif service_type == "llm":
-                    for a in ready_accounts:
-                        if a.assigned_role == "llm":
-                            return a
-                    # Default: Primary account (index 0) for llm
-                    return ready_accounts[0]
-                else:
-                    ready_accounts.sort(key=lambda a: (a.last_used or 0.0))
-                    return ready_accounts[0]
+        # Soft High-Water Mark: prefer accounts with > 10% remaining quota for target model family
+        healthy_accounts = [
+            a for a in ready_accounts
+            if a.get_remaining_quota_pct(model) > SOFT_QUOTA_HIGH_WATER_MARK_PCT
+        ]
+        candidate_pool = healthy_accounts if healthy_accounts else ready_accounts
 
-            return ready_accounts[0]
+        if strategy == "sharded":
+            if service_type in {"llm", "image_gen"}:
+                role_matched = [a for a in candidate_pool if a.assigned_role == service_type]
+                if role_matched:
+                    role_matched.sort(
+                        key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
+                    )
+                    return role_matched[0]
+
+                all_role = [a for a in candidate_pool if a.assigned_role == "all"]
+                if all_role:
+                    all_role.sort(
+                        key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
+                    )
+                    return all_role[0]
+
+            candidate_pool.sort(
+                key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
+            )
+            return candidate_pool[0]
 
         elif strategy == "round_robin":
-            ready_accounts.sort(key=lambda a: (a.last_used or 0.0))
-            chosen = ready_accounts[0]
+            candidate_pool.sort(
+                key=lambda a: (self.get_in_flight_count(a.email), a.last_used or 0.0, -self._score_account(a, model))
+            )
+            chosen = candidate_pool[0]
             self.set_active_account(chosen.email)
             return chosen
 
         elif strategy == "least_used":
-            ready_accounts.sort(key=lambda a: (a.total_requests, a.last_used or 0.0))
-            chosen = ready_accounts[0]
+            candidate_pool.sort(
+                key=lambda a: (
+                    self.get_in_flight_count(a.email),
+                    a.total_requests,
+                    -self._score_account(a, model),
+                    a.last_used or 0.0,
+                )
+            )
+            chosen = candidate_pool[0]
             self.set_active_account(chosen.email)
             return chosen
 
         else:  # 'fill_first' or 'failover'
             active = self.get_active_account()
-            if active and active.is_available and active.email not in exclude:
+            if (
+                active
+                and active.email not in exclude
+                and active.is_available_for_model(model)
+                and (not healthy_accounts or active.get_remaining_quota_pct(model) > SOFT_QUOTA_HIGH_WATER_MARK_PCT)
+            ):
                 return active
-            chosen = ready_accounts[0]
+
+            candidate_pool.sort(
+                key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
+            )
+            chosen = candidate_pool[0]
             self.set_active_account(chosen.email)
             return chosen
 
     def get_next_available_account(
         self,
         exclude_emails: Optional[Set[str]] = None,
+        model: str = "",
     ) -> Optional[AntigravityAccount]:
-        """Select the next available account based on active strategy and availability."""
-        return self.get_account_for_service("all", exclude_emails=exclude_emails)
+        """Select the next available account based on active strategy, model family, and quota health."""
+        return self.get_account_for_service("all", exclude_emails=exclude_emails, model=model)
 
     def mark_account_disabled(
         self,
@@ -571,38 +763,54 @@ class AntigravityAccountPoolManager:
         email: str,
         cooldown_seconds: Optional[float] = None,
         reason: str = "",
+        model: str = "",
+        retry_after: Optional[float] = None,
     ) -> Optional[AntigravityAccount]:
-        """Mark an account exhausted/cooling_down with tiered cooldown and auto-failover."""
+        """Mark an account exhausted/cooling_down with Retry-After/tiered cooldown and model-family isolation."""
         target = email.strip().lower()
         if "tos_violation" in reason.lower() or "disabled in this account" in reason.lower():
             return self.mark_account_disabled(target, reason=reason)
 
         if cooldown_seconds is None:
-            cooldown_seconds = self.calculate_tiered_cooldown(target)
+            if retry_after is not None and retry_after > 0:
+                cooldown_seconds = float(retry_after)
+            else:
+                parsed_retry = parse_retry_after_seconds(reason)
+                if parsed_retry is not None and parsed_retry > 0:
+                    cooldown_seconds = parsed_retry
+                else:
+                    cooldown_seconds = self.calculate_tiered_cooldown(target)
 
         now = time.time()
         cooldown_until = now + cooldown_seconds
+        family = resolve_model_family(model)
 
         with self._lock:
             data = self._load_raw()
             raw_accs = data.get("accounts", {})
             if isinstance(raw_accs, dict) and target in raw_accs:
                 if raw_accs[target].get("status") == "disabled":
-                    return self.get_next_available_account(exclude_emails={target})
+                    return self.get_next_available_account(exclude_emails={target}, model=model)
                 raw_accs[target]["status"] = "cooling_down"
                 raw_accs[target]["exhausted_until"] = cooldown_until
                 raw_accs[target]["failure_count"] = int(raw_accs[target].get("failure_count", 0)) + 1
                 raw_accs[target]["consecutive_429_count"] = int(raw_accs[target].get("consecutive_429_count", 0)) + 1
+                if family in {"claude", "gemini"}:
+                    mc = raw_accs[target].get("model_cooldowns")
+                    if not isinstance(mc, dict):
+                        mc = {}
+                    mc[family] = cooldown_until
+                    raw_accs[target]["model_cooldowns"] = mc
                 consec = raw_accs[target]["consecutive_429_count"]
                 data["accounts"] = raw_accs
                 self._save_raw(data)
                 logger.warning(
-                    "Antigravity account '%s' entered tiered cooldown for %.0fs (consecutive_429=%d, until %.0f). Reason: %s",
-                    target, cooldown_seconds, consec, cooldown_until, reason or "Rate limit / Quota reached"
+                    "Antigravity account '%s' entered cooldown for %.0fs (family=%s, consecutive_429=%d, until %.0f). Reason: %s",
+                    target, cooldown_seconds, family, consec, cooldown_until, reason or "Rate limit / Quota reached"
                 )
 
         # Automatically switch to next available account
-        next_acc = self.get_next_available_account(exclude_emails={target})
+        next_acc = self.get_next_available_account(exclude_emails={target}, model=model)
         if next_acc:
             self.set_active_account(next_acc.email)
             logger.info("Auto-failover: switched active account to '%s'", next_acc.email)
@@ -610,10 +818,11 @@ class AntigravityAccountPoolManager:
 
         return None
 
-    def record_account_usage(self, email: str, success: bool = True) -> None:
+    def record_account_usage(self, email: str, success: bool = True, model: str = "") -> None:
         """Update last_used timestamp, micro-spacing timestamp, and request statistics."""
         target = email.strip().lower()
         now = time.time()
+        family = resolve_model_family(model)
         with self._lock:
             self._last_request_times[target] = now
             data = self._load_raw()
@@ -624,8 +833,13 @@ class AntigravityAccountPoolManager:
                 acct["last_request_time"] = now
                 acct["total_requests"] = int(acct.get("total_requests", 0)) + 1
                 if success:
-                    acct["status"] = "active"
-                    acct["exhausted_until"] = None
+                    mc = acct.get("model_cooldowns")
+                    if isinstance(mc, dict) and family in mc:
+                        mc.pop(family, None)
+                        acct["model_cooldowns"] = mc
+                    if not acct.get("model_cooldowns"):
+                        acct["status"] = "active"
+                        acct["exhausted_until"] = None
                     acct["failure_count"] = 0
                     acct["consecutive_429_count"] = 0
                 else:
@@ -722,6 +936,12 @@ class AntigravityAccountPoolManager:
                 acc.last_request_time = float(old.get("last_request_time", 0.0) or 0.0)
                 acc.assigned_role = str(old.get("assigned_role", acc.assigned_role or "all"))
                 if not reset_status:
+                    if not acc.model_cooldowns and isinstance(old.get("model_cooldowns"), dict):
+                        acc.model_cooldowns = {
+                            str(k).strip().lower(): float(v)
+                            for k, v in old["model_cooldowns"].items()
+                            if v is not None
+                        }
                     old_status = str(old.get("status", "active"))
                     if old_status in {"cooling_down", "exhausted", "disabled"}:
                         acc.status = old_status

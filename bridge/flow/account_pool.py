@@ -112,10 +112,15 @@ class FlowAccountPoolManager:
         return {"active_account_id": "default", "accounts": {}}
 
     def _save_raw(self, data: Dict[str, Any]) -> None:
-        """Write raw json atomically."""
+        """Write raw json atomically with 0o600 permissions on POSIX."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_file = self.storage_path.with_suffix(".tmp")
         tmp_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        if os.name != "nt":
+            try:
+                os.chmod(tmp_file, 0o600)
+            except Exception:
+                pass
         tmp_file.replace(self.storage_path)
 
     def list_accounts(self) -> List[FlowAccount]:

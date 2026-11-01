@@ -227,7 +227,7 @@ class TestAntigravityAccountPool(unittest.TestCase):
     def test_from_dict_normalizes_pro_tier(self):
         """Verify from_dict normalizes tier_id='g1-pro-tier' even if plan_type was stored as 'free'."""
         data = {
-            "email": "thietbibenthanh.data@gmail.com",
+            "email": "pro.user@example.com",
             "tier_id": "g1-pro-tier",
             "plan_type": "free",
             "plan_name": "",
@@ -241,7 +241,7 @@ class TestAntigravityAccountPool(unittest.TestCase):
     def test_add_or_update_account_normalizes_pro(self):
         """Verify add_or_update_account normalizes pro accounts into storage."""
         data = {
-            "email": "thietbibenthanh.data@gmail.com",
+            "email": "pro.user@example.com",
             "tier_id": "g1-pro-tier",
             "plan_type": "free",
             "plan_name": "",
@@ -249,7 +249,7 @@ class TestAntigravityAccountPool(unittest.TestCase):
         acc = self.pool.add_or_update_account(data)
         self.assertEqual(acc.plan_type, "pro")
         self.assertEqual(acc.plan_name, "Google AI Pro")
-        stored = self.pool.get_account("thietbibenthanh.data@gmail.com")
+        stored = self.pool.get_account("pro.user@example.com")
         self.assertIsNotNone(stored)
         self.assertEqual(stored.plan_type, "pro")
         self.assertEqual(stored.plan_name, "Google AI Pro")

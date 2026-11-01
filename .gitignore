@@ -13,8 +13,11 @@ __pycache__/
 
 # Auth tokens & local browser sessions
 flow_token.json
+flow_accounts.json
 antigravity_tokens.json
+antigravity_accounts.json
 *tokens*.json
+*accounts*.json
 auth.json
 *.token.json
 *.token
@@ -26,6 +29,10 @@ camofox/
 *.bak
 vbsec-reports/
 .agent/
+.claude/
+.gitnexus/
+AGENTS.md
+CLAUDE.md
 
 # Scratch & development artifacts
 scratch/

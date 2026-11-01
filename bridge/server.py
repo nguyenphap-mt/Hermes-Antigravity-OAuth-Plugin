@@ -408,13 +408,17 @@ def ensure_antigravity_bridge_running(
 
     plugin_root = Path(__file__).resolve().parent.parent
     log_file = get_log_file()
+    safe_root = repr(str(plugin_root))
+    safe_log = repr(str(log_file))
+    safe_host = repr(str(host))
+    safe_port = int(port)
 
     runner_code = (
         f"import sys, os\n"
-        f"p = r'{plugin_root}'\n"
+        f"p = {safe_root}\n"
         f"if p not in sys.path: sys.path.insert(0, p)\n"
         f"try:\n"
-        f"    log_fd = open(r'{log_file}', 'a', encoding='utf-8')\n"
+        f"    log_fd = open({safe_log}, 'a', encoding='utf-8')\n"
         f"    sys.stdout = log_fd\n"
         f"    sys.stderr = log_fd\n"
         f"except Exception:\n"
@@ -423,7 +427,7 @@ def ensure_antigravity_bridge_running(
         f"    from tools.antigravity_bridge.server import run_server\n"
         f"except ImportError:\n"
         f"    from bridge.server import run_server\n"
-        f"run_server(host='{host}', port={port})\n"
+        f"run_server(host={safe_host}, port={safe_port})\n"
     )
 
     try:

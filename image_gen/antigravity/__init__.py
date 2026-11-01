@@ -217,14 +217,23 @@ class AntigravityImageGenProvider(ImageGenProvider):
 
             # Order candidate accounts using Task-Based Sharding
             ordered_accounts = []
-            service_account = pool.get_account_for_service("image_gen")
+            try:
+                service_account = pool.get_account_for_service("image_gen", model=api_model)
+            except TypeError:
+                service_account = pool.get_account_for_service("image_gen")
             if service_account:
                 ordered_accounts.append(service_account)
 
-            all_accounts = pool.list_accounts()
-            for a in all_accounts:
-                if a.is_available and not any(x.email == a.email for x in ordered_accounts):
-                    ordered_accounts.append(a)
+            all_accounts = [a for a in pool.list_accounts() if getattr(a, "status", "active") != "disabled"]
+            avail_accounts = [
+                a for a in all_accounts
+                if (a.is_available_for_model(api_model) if hasattr(a, "is_available_for_model") else a.is_available)
+                and not any(x.email == a.email for x in ordered_accounts)
+            ]
+            if avail_accounts and hasattr(avail_accounts[0], "compute_routing_health_score"):
+                avail_accounts.sort(key=lambda a: -a.compute_routing_health_score(api_model))
+            ordered_accounts.extend(avail_accounts)
+
             for a in all_accounts:
                 if not any(x.email == a.email for x in ordered_accounts):
                     ordered_accounts.append(a)
@@ -319,131 +328,151 @@ class AntigravityImageGenProvider(ImageGenProvider):
 
             account_failed_with_429 = False
 
-            # Enforce micro-spacing guard to avoid rapid concurrency bursts
-            if pool:
-                pool.enforce_micro_spacing(email, min_interval=1.2)
+            if pool and hasattr(pool, "acquire_lease"):
+                pool.acquire_lease(email)
 
-            for proj in candidate_projects:
-                if account_failed_with_429:
-                    break
+            try:
+                # Enforce micro-spacing guard to avoid rapid concurrency bursts
+                if pool:
+                    pool.enforce_micro_spacing(email, min_interval=1.2)
 
-                prompt_id = str(uuid.uuid4())
-                try:
+                for proj in candidate_projects:
+                    if account_failed_with_429:
+                        break
+
+                    prompt_id = str(uuid.uuid4())
                     try:
-                        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                    except ImportError:
-                        from bridge.fingerprint import AntigravityFingerprint
-                    trajectory_id = AntigravityFingerprint.get_trajectory_id()
-                except Exception:
-                    trajectory_id = str(uuid.uuid4())
+                        try:
+                            from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
+                        except ImportError:
+                            from bridge.fingerprint import AntigravityFingerprint
+                        trajectory_id = AntigravityFingerprint.get_trajectory_id()
+                    except Exception:
+                        trajectory_id = str(uuid.uuid4())
 
-                ts_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
-                cascade_id = str(uuid.uuid4())
+                    ts_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+                    cascade_id = str(uuid.uuid4())
 
-                payload = {
-                    "project": proj,
-                    "model": api_model,
-                    "userAgent": "antigravity",
-                    "requestType": "agent",
-                    "requestId": f"agent/{trajectory_id}/{ts_ms}/{cascade_id}/1",
-                    "userPromptId": prompt_id,
-                    "request": {
-                        "contents": [
-                            {"role": "user", "parts": parts}
-                        ],
-                        "sessionId": trajectory_id,
-                        "generationConfig": {
-                            "candidateCount": 1,
+                    payload = {
+                        "project": proj,
+                        "model": api_model,
+                        "userAgent": "antigravity",
+                        "requestType": "agent",
+                        "requestId": f"agent/{trajectory_id}/{ts_ms}/{cascade_id}/1",
+                        "userPromptId": prompt_id,
+                        "request": {
+                            "contents": [
+                                {"role": "user", "parts": parts}
+                            ],
+                            "sessionId": trajectory_id,
+                            "generationConfig": {
+                                "candidateCount": 1,
+                            }
                         }
                     }
-                }
-                payload_bytes = json.dumps(payload).encode("utf-8")
-                try:
-                    from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
-                    headers = AntigravityFingerprint.build_headers(
-                        creds.access_token,
-                        project_id=proj,
-                        prompt_id=prompt_id,
-                        trajectory_id=trajectory_id,
-                    )
-                except ImportError:
+                    payload_bytes = json.dumps(payload).encode("utf-8")
                     try:
-                        from bridge.fingerprint import AntigravityFingerprint
+                        from tools.antigravity_bridge.fingerprint import AntigravityFingerprint
                         headers = AntigravityFingerprint.build_headers(
                             creds.access_token,
                             project_id=proj,
                             prompt_id=prompt_id,
                             trajectory_id=trajectory_id,
                         )
-                    except Exception:
-                        headers = {
-                            "Content-Type": "application/json",
-                            "Accept-Encoding": "gzip",
-                            "Authorization": f"Bearer {creds.access_token}",
-                            "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
-                            "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
-                            "Client-Metadata": json.dumps({
-                                "ideType": "ANTIGRAVITY",
-                                "platform": "PLATFORM_WINDOWS",
-                                "pluginType": "GEMINI",
-                                "applicationVersion": "2.23.1",
-                            }, separators=(",", ":")),
-                        }
+                    except ImportError:
+                        try:
+                            from bridge.fingerprint import AntigravityFingerprint
+                            headers = AntigravityFingerprint.build_headers(
+                                creds.access_token,
+                                project_id=proj,
+                                prompt_id=prompt_id,
+                                trajectory_id=trajectory_id,
+                            )
+                        except Exception:
+                            headers = {
+                                "Content-Type": "application/json",
+                                "Accept-Encoding": "gzip",
+                                "Authorization": f"Bearer {creds.access_token}",
+                                "User-Agent": "antigravity/2.23.1 (aidev_client; os_type=windows; arch=amd64; cl=998881661)",
+                                "X-Goog-Api-Client": "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1",
+                                "Client-Metadata": json.dumps({
+                                    "ideType": "ANTIGRAVITY",
+                                    "platform": "PLATFORM_WINDOWS",
+                                    "pluginType": "GEMINI",
+                                    "applicationVersion": "2.23.1",
+                                }, separators=(",", ":")),
+                            }
 
-                endpoints = [CODE_ASSIST_URL, FALLBACK_CODE_ASSIST_URL]
-                for ep in endpoints:
-                    try:
-                        req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
-                        with urllib.request.urlopen(req, timeout=30.0) as resp:
-                            raw_response = _decode_resp(resp)
-                            if raw_response:
-                                successful_email = email
-                                if pool:
-                                    pool.record_account_usage(email, success=True)
-                                break
-                    except urllib.error.HTTPError as h_err:
-                        err_text = h_err.read().decode("utf-8", errors="replace")
-                        logger.debug("Account %s endpoint %s with project %s failed with HTTP %s: %s", email, ep, proj, h_err.code, err_text)
-                        last_error = f"HTTP {h_err.code}: {err_text}"
-                        if h_err.code == 429:
-                            if is_single_account:
-                                # Single account RandExpBackoff retry loop (mimics Antigravity IDE)
-                                import random
-                                import time as _time
-                                for backoff_attempt in range(3):
-                                    delay = 1.5 * (2 ** backoff_attempt) + random.uniform(0.2, 0.6)
-                                    logger.info(
-                                        "Single-account rate limit: RandExpBackoff waiting %.2fs before retry %d/3...",
-                                        delay, backoff_attempt + 1
-                                    )
-                                    _time.sleep(delay)
-                                    try:
-                                        retry_req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
-                                        with urllib.request.urlopen(retry_req, timeout=30.0) as retry_resp:
-                                            raw_response = _decode_resp(retry_resp)
-                                            if raw_response:
-                                                successful_email = email
-                                                if pool:
-                                                    pool.record_account_usage(email, success=True)
-                                                break
-                                    except Exception as retry_e:
-                                        last_error = str(retry_e)
+                    endpoints = [CODE_ASSIST_URL, FALLBACK_CODE_ASSIST_URL]
+                    for ep in endpoints:
+                        try:
+                            req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
+                            with urllib.request.urlopen(req, timeout=30.0) as resp:
+                                raw_response = _decode_resp(resp)
                                 if raw_response:
+                                    successful_email = email
+                                    if pool:
+                                        try:
+                                            pool.record_account_usage(email, success=True, model=api_model)
+                                        except TypeError:
+                                            pool.record_account_usage(email, success=True)
                                     break
+                        except urllib.error.HTTPError as h_err:
+                            err_text = h_err.read().decode("utf-8", errors="replace")
+                            logger.debug("Account %s endpoint %s with project %s failed with HTTP %s: %s", email, ep, proj, h_err.code, err_text)
+                            last_error = f"HTTP {h_err.code}: {err_text}"
+                            if h_err.code == 429:
+                                if is_single_account:
+                                    # Single account RandExpBackoff retry loop (mimics Antigravity IDE)
+                                    import random
+                                    import time as _time
+                                    for backoff_attempt in range(3):
+                                        delay = 1.5 * (2 ** backoff_attempt) + random.uniform(0.2, 0.6)
+                                        logger.info(
+                                            "Single-account rate limit: RandExpBackoff waiting %.2fs before retry %d/3...",
+                                            delay, backoff_attempt + 1
+                                        )
+                                        _time.sleep(delay)
+                                        try:
+                                            retry_req = urllib.request.Request(ep, data=payload_bytes, headers=headers, method="POST")
+                                            with urllib.request.urlopen(retry_req, timeout=30.0) as retry_resp:
+                                                raw_response = _decode_resp(retry_resp)
+                                                if raw_response:
+                                                    successful_email = email
+                                                    if pool:
+                                                        try:
+                                                            pool.record_account_usage(email, success=True, model=api_model)
+                                                        except TypeError:
+                                                            pool.record_account_usage(email, success=True)
+                                                    break
+                                        except Exception as retry_e:
+                                            last_error = str(retry_e)
+                                    if raw_response:
+                                        break
 
-                            logger.warning("Antigravity account '%s' hit HTTP 429 (rate/quota limit). Failing over...", email)
-                            if pool:
-                                pool.mark_account_exhausted(email, reason="HTTP 429 Rate Limit")
-                            account_failed_with_429 = True
-                            break
-                        elif h_err.code in (403, 404):
-                            break
-                    except Exception as ex:
-                        logger.debug("Account %s endpoint %s failed: %s", email, ep, ex)
-                        last_error = str(ex)
+                                logger.warning("Antigravity account '%s' hit HTTP 429 (rate/quota limit). Failing over...", email)
+                                if pool:
+                                    try:
+                                        pool.mark_account_exhausted(
+                                            email,
+                                            reason=f"HTTP 429 Rate Limit: {err_text[:200]}",
+                                            model=api_model,
+                                        )
+                                    except TypeError:
+                                        pool.mark_account_exhausted(email, reason="HTTP 429 Rate Limit")
+                                account_failed_with_429 = True
+                                break
+                            elif h_err.code in (403, 404):
+                                break
+                        except Exception as ex:
+                            logger.debug("Account %s endpoint %s failed: %s", email, ep, ex)
+                            last_error = str(ex)
 
-                if raw_response:
-                    break
+                    if raw_response:
+                        break
+            finally:
+                if pool and hasattr(pool, "release_lease"):
+                    pool.release_lease(email)
 
             if raw_response:
                 break

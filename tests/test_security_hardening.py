@@ -183,3 +183,24 @@ def test_flow_handshake_does_not_copy_chrome_login_data():
     assert "Login Data" not in src
     assert "Secure Preferences" not in src
     assert "page = ctx.pages[0] if ctx.pages else ctx.new_page()" in src
+
+
+def test_dashboard_html_avatar_uses_safe_dom_creation():
+    """Verify dashboard/dist/index.html does not interpolate data.user_image into innerHTML."""
+    html_file = Path(__file__).resolve().parent.parent / "dashboard" / "dist" / "index.html"
+    content = html_file.read_text(encoding="utf-8")
+    assert "${data.user_image}" not in content
+    assert "document.createElement('img')" in content
+
+
+def test_daemon_spawn_uses_repr_escaping():
+    """Verify bridge/server.py and dashboard/plugin_api.py escape paths and host via repr()."""
+    srv_file = Path(__file__).resolve().parent.parent / "bridge" / "server.py"
+    api_file = Path(__file__).resolve().parent.parent / "dashboard" / "plugin_api.py"
+    srv_src = srv_file.read_text(encoding="utf-8")
+    api_src = api_file.read_text(encoding="utf-8")
+    assert "repr(str(plugin_root))" in srv_src
+    assert "repr(str(host))" in srv_src
+    assert "repr(str(_PLUGIN_ROOT))" in api_src
+    assert "log_fd.close()" in api_src
+
