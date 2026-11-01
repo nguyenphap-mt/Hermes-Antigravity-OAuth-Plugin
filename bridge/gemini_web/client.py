@@ -318,6 +318,16 @@ class GeminiWebClient:
                     if resp2.status_code == 200:
                         parsed = parse_bard_stream_generate_response(resp2.text)
 
+            if not parsed.get("ok") and (node.email or node.linked_oauth_account_id):
+                fallback_res = await self._generate_via_linked_oauth_account(
+                    node=node,
+                    prompt_text=prompt_text,
+                    model_name=model_name,
+                    http=http,
+                )
+                if fallback_res.get("ok"):
+                    return fallback_res
+
             return parsed
         except Exception as e:
             logger.warning("GeminiWebClient.generate_on_node error on %s: %s", node.node_id, e)
@@ -336,7 +346,7 @@ class GeminiWebClient:
         """Execute Gemini inference using the node's linked Google OAuth account when running in OAuth-Bridge mode."""
         try:
             try:
-                from tools.antigravity_bridge.auth import AuthManager
+                from tools.antigravity_bridge.auth import AntigravityAuthManager
                 from tools.antigravity_bridge.client import (
                     CODE_ASSIST_BASE_URL,
                     DEFAULT_PROJECT_ID,
@@ -344,7 +354,7 @@ class GeminiWebClient:
                     build_antigravity_headers,
                 )
             except ImportError:
-                from ..auth import AuthManager
+                from ..auth import AntigravityAuthManager
                 from ..client import (
                     CODE_ASSIST_BASE_URL,
                     DEFAULT_PROJECT_ID,
@@ -358,7 +368,7 @@ class GeminiWebClient:
                 if alt_file.is_file():
                     auth_file = alt_file
 
-            auth_mgr = AuthManager(auth_file=auth_file) if auth_file.is_file() else AuthManager()
+            auth_mgr = AntigravityAuthManager(auth_file=auth_file) if auth_file.is_file() else AntigravityAuthManager()
             target_email = (node.email or node.linked_oauth_account_id or "").strip()
             creds = auth_mgr.resolve_valid_credentials(bearer_token=target_email)
             if not creds:
