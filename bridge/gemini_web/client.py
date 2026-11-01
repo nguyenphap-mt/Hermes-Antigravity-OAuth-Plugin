@@ -369,41 +369,62 @@ class GeminiWebClient:
                     auth_file = alt_file
 
             auth_mgr = AntigravityAuthManager(auth_file=auth_file) if auth_file.is_file() else AntigravityAuthManager()
-            target_email = (node.email or node.linked_oauth_account_id or "").strip()
-            creds = auth_mgr.resolve_valid_credentials(bearer_token=target_email)
-            if not creds:
-                creds = auth_mgr.resolve_valid_credentials(bearer_token="")
+            target_email = (node.email or node.linked_oauth_account_id or "").strip().lower()
+            all_creds = auth_mgr.load_all_stored_credentials()
+            creds = None
+            for c in all_creds:
+                if target_email and (c.email or "").strip().lower() == target_email:
+                    creds = c
+                    break
+            if not creds and all_creds:
+                creds = all_creds[0]
             if not creds:
                 return {"ok": False, "error": f"No valid OAuth credentials found for linked node '{node.email}'."}
 
+            if creds.is_expired and creds.refresh_token:
+                creds = auth_mgr.refresh_access_token(creds)
+
             effective_proj = (
-                getattr(creds, "effective_project_id", None)
+                getattr(creds, "managed_project_id", None)
                 or getattr(creds, "project_id", None)
                 or DEFAULT_PROJECT_ID
             )
-            upstream_model = "gemini-2.5-flash" if "flash" in (model_name or "").lower() else "gemini-2.5-pro"
-            prompt_id = str(uuid.uuid4())
-            envelope = {
-                "model": upstream_model,
-                "project": effective_proj,
-                "user_prompt_id": prompt_id,
-                "request": {
-                    "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-                    "generationConfig": {"temperature": 0.4},
-                },
-            }
-            headers = build_antigravity_headers(
-                creds.access_token,
-                effective_proj,
-                prompt_id=prompt_id,
-                trajectory_id=str(uuid.uuid4()),
-            )
-            resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-            if resp.status_code in {404, 429, 500, 502, 503, 504}:
-                resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+            if not effective_proj or effective_proj == DEFAULT_PROJECT_ID:
+                resolved_pid = auth_mgr.resolve_project_id(creds)
+                if resolved_pid:
+                    effective_proj = resolved_pid
+            if "flash" in (model_name or "").lower():
+                candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
+            else:
+                candidate_models = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
 
-            if resp.status_code != 200:
-                return {"ok": False, "error": f"Linked Google account returned HTTP {resp.status_code}"}
+            resp = None
+            for upstream_model in candidate_models:
+                prompt_id = str(uuid.uuid4())
+                envelope = {
+                    "model": upstream_model,
+                    "project": effective_proj,
+                    "user_prompt_id": prompt_id,
+                    "request": {
+                        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+                        "generationConfig": {"temperature": 0.4},
+                    },
+                }
+                headers = build_antigravity_headers(
+                    creds.access_token,
+                    effective_proj,
+                    prompt_id=prompt_id,
+                    trajectory_id=str(uuid.uuid4()),
+                )
+                resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+                if resp.status_code in {404, 429, 500, 502, 503, 504}:
+                    resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+                if resp.status_code == 200:
+                    break
+
+            if resp is None or resp.status_code != 200:
+                code = resp.status_code if resp is not None else "None"
+                return {"ok": False, "error": f"Linked Google account returned HTTP {code}"}
 
             data = resp.json()
             inner = data.get("response") if isinstance(data.get("response"), dict) else data
