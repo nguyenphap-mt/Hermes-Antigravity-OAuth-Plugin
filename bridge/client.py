@@ -99,6 +99,24 @@ ANTIGRAVITY_SUPPORTED_MODELS = [
         "code_assist_model": "gpt-oss-120b",
         "description": "GPT-OSS 120B open-weights model via Antigravity.",
     },
+    {
+        "id": "gemini-web-argon",
+        "name": "Gemini Argon (Web App Pro/Ultra)",
+        "code_assist_model": "gemini-web-argon",
+        "description": "Gemini Argon (Pro/Ultra) via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-2.5-pro",
+        "name": "Gemini 2.5 Pro (Web App)",
+        "code_assist_model": "gemini-web-2.5-pro",
+        "description": "Gemini 2.5 Pro via gemini.google.com/app consumer web quota.",
+    },
+    {
+        "id": "gemini-web-2.5-flash",
+        "name": "Gemini 2.5 Flash (Web App)",
+        "code_assist_model": "gemini-web-2.5-flash",
+        "description": "Gemini 2.5 Flash via gemini.google.com/app consumer web quota.",
+    },
 ]
 
 MODEL_ALIAS_MAP = {
@@ -828,12 +846,13 @@ def translate_gemini_stream_event(
 
 
 class AntigravityClient:
-    """HTTP Client executing requests against Google Code Assist backend."""
+    """HTTP Client executing requests against Google Code Assist and Dedicated Gemini Web App Pool."""
 
     def __init__(
         self,
         auth_manager: Optional[AntigravityAuthManager] = None,
         model_discovery: Optional[ModelDiscoveryManager] = None,
+        gemini_web_pool: Optional[Any] = None,
     ) -> None:
         self.auth_manager = auth_manager or AntigravityAuthManager()
         self.model_discovery = model_discovery or ModelDiscoveryManager(self.auth_manager)
@@ -844,8 +863,75 @@ class AntigravityClient:
         self.account_pool = AntigravityAccountPoolManager(storage_path=self.auth_manager.auth_file)
         self._http = httpx.AsyncClient(timeout=120.0)
 
+        try:
+            from tools.antigravity_bridge.gemini_web import (
+                GeminiWebClient,
+                GeminiWebPoolManager,
+            )
+        except ImportError:
+            from .gemini_web import GeminiWebClient, GeminiWebPoolManager
+
+        if gemini_web_pool is not None:
+            self.gemini_web_pool = gemini_web_pool
+        else:
+            from pathlib import Path
+            import tempfile
+            auth_file_path = getattr(self.auth_manager, "auth_file", None)
+            if isinstance(auth_file_path, Path):
+                gweb_dir = (
+                    auth_file_path.parent.parent
+                    if auth_file_path.parent.name == "auth"
+                    else auth_file_path.parent
+                )
+            else:
+                gweb_dir = Path(tempfile.gettempdir()) / "_ag_isolated_mock_gweb"
+            self.gemini_web_pool = GeminiWebPoolManager(hermes_dir=gweb_dir)
+
+        self.gemini_web_client = GeminiWebClient(
+            pool_manager=self.gemini_web_pool,
+            http_client=self._http,
+        )
+
     async def close(self) -> None:
         await self._http.aclose()
+
+    @staticmethod
+    def _is_gemini_family_model(requested_model: str) -> bool:
+        norm = (requested_model or "").strip().lower()
+        if "/" in norm:
+            norm = norm.split("/", 1)[1]
+        if norm.startswith("claude") or norm.startswith("gpt-oss") or norm.startswith("gpt"):
+            return False
+        return True
+
+    def _is_explicit_web_model(self, requested_model: str) -> bool:
+        try:
+            from tools.antigravity_bridge.gemini_web import is_explicit_gemini_web_model
+        except ImportError:
+            from .gemini_web import is_explicit_gemini_web_model
+        return is_explicit_gemini_web_model(requested_model)
+
+    def _should_route_web_first(self, requested_model: str) -> bool:
+        if not self._is_gemini_family_model(requested_model):
+            return False
+        try:
+            cfg = self.gemini_web_pool.get_config()
+            if cfg.get("routing_mode") == "web_first":
+                return self.gemini_web_pool.has_available_node(requested_model)
+        except Exception:
+            pass
+        return False
+
+    def _can_hybrid_failover_to_web(self, requested_model: str) -> bool:
+        if not self._is_gemini_family_model(requested_model):
+            return False
+        try:
+            cfg = self.gemini_web_pool.get_config()
+            if cfg.get("routing_mode", "hybrid_failover") in ("hybrid_failover", "web_first"):
+                return self.gemini_web_pool.has_available_node(requested_model)
+        except Exception:
+            pass
+        return False
 
     def _select_attempt_credentials(
         self,
@@ -894,17 +980,32 @@ class AntigravityClient:
         openai_payload: Dict[str, Any],
         bearer_token: str = "",
     ) -> Dict[str, Any]:
-        """Execute a non-streaming chat completion with multi-account quota-aware auto-failover."""
+        """Execute a non-streaming chat completion with multi-account quota-aware & Gemini Web hybrid auto-failover."""
         try:
             from tools.antigravity_bridge.account_pool import parse_retry_after_seconds
         except ImportError:
             from .account_pool import parse_retry_after_seconds
 
+        requested_model = str(openai_payload.get("model") or "gemini-3.7-flash")
+
+        # 1. Direct Gemini Web model (`gemini-web-argon`, `gemini-web-2.5-pro`, `gemini-web-2.5-flash`)
+        if self._is_explicit_web_model(requested_model):
+            return await self.gemini_web_client.create_chat_completion(openai_payload)
+
+        # 2. Web-First Routing Mode: prioritize Gemini Web App quota before Code Assist
+        if self._should_route_web_first(requested_model):
+            try:
+                return await self.gemini_web_client.create_chat_completion(openai_payload)
+            except Exception as web_err:
+                logger.warning(
+                    "Web-First routing failed on Gemini Web Pool (%s); falling back to Code Assist OAuth pool...",
+                    web_err,
+                )
+
         attempted_emails = set()
         accounts = self.account_pool.list_accounts()
         max_attempts = max(1, len(accounts))
         last_error = None
-        requested_model = str(openai_payload.get("model") or "gemini-3.7-flash")
 
         for attempt in range(max_attempts):
             creds = self._select_attempt_credentials(
@@ -1053,10 +1154,23 @@ class AntigravityClient:
                             current_email, reason=str(e)
                         )
                     continue
+                if self._can_hybrid_failover_to_web(requested_model):
+                    logger.warning(
+                        "Code Assist pool failed on final attempt (%s); auto-failing over to Dedicated Gemini Web Pool...",
+                        e,
+                    )
+                    return await self.gemini_web_client.create_chat_completion(openai_payload)
                 raise
             finally:
                 if hasattr(self.account_pool, "release_lease"):
                     self.account_pool.release_lease(current_email)
+
+        if self._can_hybrid_failover_to_web(requested_model):
+            logger.info(
+                "All Code Assist accounts unavailable/exhausted for '%s'; routing via Dedicated Gemini Web Pool...",
+                requested_model,
+            )
+            return await self.gemini_web_client.create_chat_completion(openai_payload)
 
         raise RuntimeError(f"All Antigravity accounts in pool exhausted. Last error: {last_error}")
 
@@ -1065,11 +1179,31 @@ class AntigravityClient:
         openai_payload: Dict[str, Any],
         bearer_token: str = "",
     ) -> AsyncIterator[str]:
-        """Stream chat completion as Server-Sent Events (SSE) with quota-aware auto-failover."""
+        """Stream chat completion as Server-Sent Events (SSE) with quota-aware & Gemini Web hybrid auto-failover."""
         try:
             from tools.antigravity_bridge.account_pool import parse_retry_after_seconds
         except ImportError:
             from .account_pool import parse_retry_after_seconds
+
+        requested_model = str(openai_payload.get("model") or "gemini-3.7-flash")
+
+        # 1. Direct Gemini Web model (`gemini-web-argon`, `gemini-web-2.5-pro`, `gemini-web-2.5-flash`)
+        if self._is_explicit_web_model(requested_model):
+            async for chunk in self.gemini_web_client.stream_chat_completion(openai_payload):
+                yield chunk
+            return
+
+        # 2. Web-First Routing Mode: prioritize Gemini Web App quota before Code Assist
+        if self._should_route_web_first(requested_model):
+            try:
+                async for chunk in self.gemini_web_client.stream_chat_completion(openai_payload):
+                    yield chunk
+                return
+            except Exception as web_err:
+                logger.warning(
+                    "Web-First streaming failed on Gemini Web Pool (%s); falling back to Code Assist OAuth pool...",
+                    web_err,
+                )
 
         attempted_emails = set()
         accounts = self.account_pool.list_accounts()
@@ -1077,7 +1211,6 @@ class AntigravityClient:
         last_error = None
 
         stream_id = f"chatcmpl-{uuid.uuid4().hex}"
-        requested_model = str(openai_payload.get("model") or "gemini-3.7-flash")
 
         for attempt in range(max_attempts):
             creds = self._select_attempt_credentials(
@@ -1265,9 +1398,26 @@ class AntigravityClient:
                             current_email, reason=str(e)
                         )
                     continue
+                if self._can_hybrid_failover_to_web(requested_model):
+                    logger.warning(
+                        "Code Assist streaming failed on final attempt (%s); auto-failing over to Dedicated Gemini Web Pool...",
+                        e,
+                    )
+                    async for chunk in self.gemini_web_client.stream_chat_completion(openai_payload):
+                        yield chunk
+                    return
                 raise
             finally:
                 if hasattr(self.account_pool, "release_lease"):
                     self.account_pool.release_lease(current_email)
+
+        if self._can_hybrid_failover_to_web(requested_model):
+            logger.info(
+                "All Code Assist accounts unavailable/exhausted for streaming '%s'; routing via Dedicated Gemini Web Pool...",
+                requested_model,
+            )
+            async for chunk in self.gemini_web_client.stream_chat_completion(openai_payload):
+                yield chunk
+            return
 
         raise RuntimeError(f"All Antigravity accounts exhausted for streaming. Last error: {last_error}")

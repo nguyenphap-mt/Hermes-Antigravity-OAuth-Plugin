@@ -6,7 +6,7 @@
 
 > **Premium extension suite for Hermes Agent**, delivering end-to-end integration of top-tier AI models from **Google Antigravity OAuth** (Gemini 2.5/3.7, Claude 3.5/3.7 Sonnet & Opus, GPT-OSS 120B), **AI Image Generation** (Gemini 3.1 Flash Image), and **Cinematic AI Video Generation** (Google Flow Veo 3.1 & Omni 1.1 Flash) into Hermes Agent — across CLI, Telegram, Discord, TUI, and Web Dashboard.
 
-**Version:** `v3.2.0 (November 2026 - Proactive Quota-Aware Rotation Engine v2.0)`  
+**Version:** `v3.3.0 (November 2026 - Gemini Web App Quota Bridge & Dedicated Web Pool v1.2)`  
 **Author:** Nguyen Phap  
 **License:** MIT / Apache 2.0  
 
@@ -34,18 +34,18 @@
     │              ANTIGRAVITY LOOPBACK BRIDGE ENGINE               │
     │                   (tools/antigravity_bridge)                  │
     ├───────────────────────────────┬───────────────────────────────┤
-    │  • OAuth 2.0 PKCE Multi-Acc   │  • Camofox Browser Bridge     │
-    │  • Credential Pool Strategies │  • reCAPTCHA Enterprise Token │
+    │  • OAuth 2.0 PKCE Multi-Acc   │  • Gemini Web App Quota Pool  │
+    │  • Credential Pool Strategies │  • Camofox Browser Bridge     │
     │  • Token Auto-Refresh Daemon  │  • Google Flow Generator      │
-    │  • 32+ Dynamic Model Catalog  │  • Local HTTP Proxy (v1 API)  │
+    │  • 35+ Dynamic Model Catalog  │  • Local HTTP Proxy (v1 API)  │
     └───────────────────────────────┴───────────────────────────────┘
 ```
 
 ### 1. 🧠 LLM Chat & Code Assist (`plugins/model-providers/antigravity`)
 - **OpenAI-Compatible Local Loopback**: Runs local HTTP proxy at `http://127.0.0.1:8100/v1` (`/v1/chat/completions`, `/v1/models`).
-- **Dynamic Model Discovery (32+ Models)**: Automatically discovers available models from Google Cloud Code Assist based on active account entitlements (Gemini 3.7 Flash/Pro, Gemini 2.5 Flash/Pro, Claude 3.5/3.7 Sonnet, Claude 3.7 Sonnet Thinking, Claude Opus 4.6, GPT-OSS 120B).
+- **Dynamic Model Discovery (35+ Models)**: Automatically discovers available models from Google Cloud Code Assist AND Gemini Web App (`gemini-web-argon`, `gemini-web-2.5-pro`, `gemini-web-2.5-flash`, Gemini 3.7 Flash/Pro, Claude 3.5/3.7 Sonnet, Claude Opus 4.6, GPT-OSS 120B).
 - **Multi-Modal Vision**: Translates inline/URL images into Google API `inlineData` structure.
-- **Native Structured Tool Calling**: Two-way schema translation between OpenAI JSON Schema and Google `functionDeclarations`, strictly honoring Hermes message role alternation rules.
+- **Native Structured Tool Calling**: Two-way schema translation between OpenAI JSON Schema and Google `functionDeclarations` (plus `<antigravity_tool_protocol>` XML/JSON adaptation for Gemini Web App), strictly honoring Hermes message role alternation rules.
 - **Reasoning / Thinking Forwarding**: Full support for `thinking_config` on thinking-enabled models.
 - **Daemon Auto-Wake**: Automatically checks and starts the background bridge server on-demand without manual intervention.
 
@@ -81,12 +81,15 @@
 - **Automatic Media Delivery**: Polls generation status, downloads `.mp4` video locally (`~/.hermes/media/flow/`), and delivers directly to Telegram/Discord.
 - **Bundled Skill**: `skills/ai-video-generation` instructs the agent to invoke `video_generate` natively instead of writing ad-hoc FFmpeg scripts.
 
-### 5. 🌐 Web Dashboard & Runtime Dynamic Injector (`injector.py`)
+### 5. 🌐 Web Dashboard & Runtime Dynamic Injector (`injector.py` + `dashboard/plugin_api.py`)
 - **Zero Core Modifications Principle**: Leaves core Hermes repository files untouched.
-- **In-Memory Dynamic Monkey-Patching**: Injects Antigravity management cards, model options, and API endpoints into FastAPI Web Dashboard during startup:
-  - `/api/credentials/providers/antigravity/accounts`
-  - `/api/credentials/providers/antigravity/oauth/start`
-  - `/api/credentials/providers/antigravity/oauth/poll`
+- **7-Tab Native Dashboard Extension**: Mounts at `/api/plugins/antigravity/` with full control over Overview, OAuth Account Pool, Model Catalog & Quotas, Google Flow Video Studio, Image Studio, **Gemini Web App Quota Pool**, and Doctor & Logs.
+
+### 6. 🌍 Gemini Web App (`gemini.google.com/app`) Quota Bridge & Dedicated Web Pool (`bridge/gemini_web`)
+- **Independent Consumer Web Quota Exploitation**: Harnesses the separate consumer quota of `https://gemini.google.com/app` (**Gemini Argon** `gemini-web-argon`, **Gemini 2.5 Pro** `gemini-web-2.5-pro`, **Gemini 2.5 Flash** `gemini-web-2.5-flash`) even when Google Cloud Code Assist OAuth accounts are at `0%` or disabled due to ToS restrictions.
+- **Dedicated `GeminiWebPoolManager` (`~/.hermes/gemini_web_pool.json`)**: Manages standalone Web Nodes (`gweb_*`) with independent `enabled` toggles, sliding-window 1h/24h quota tracking per model family (`argon`, `pro`, `flash`), proactive high-water mark node switching (`<= 10%`), and sticky server-side `[cid, rid, rcid]` context persistence.
+- **3 Flexible Routing Modes**: `hybrid_failover` (Code Assist primary $\rightarrow$ auto-failover to Gemini Web on 429/403), `web_first` (Gemini Web primary $\rightarrow$ save Code Assist quota), and `isolated` (strictly explicit `gemini-web-*` models).
+- **Full Hermes Agent Tool-Calling (`GeminiWebToolAdapter`)**: Bidirectional OpenAI `tools`/`tool_calls` $\leftrightarrow$ `<tool_call>` XML/JSON protocol adaptation enabling multi-turn execution of real Hermes tools (`terminal`, `read_file`, `write_file`, etc.) over `BardFrontendService/StreamGenerate`.
 
 ---
 

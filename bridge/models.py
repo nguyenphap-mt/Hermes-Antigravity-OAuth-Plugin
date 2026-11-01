@@ -93,6 +93,16 @@ BACKEND_MODEL_ALIASES: Dict[str, str] = {
     # GPT OSS aliases
     "gpt-oss": "gpt-oss-120b-medium",
     "gpt-oss-120b": "gpt-oss-120b-medium",
+
+    # Gemini Web App (gemini.google.com/app) aliases
+    "gemini-web-argon": "gemini-web-argon",
+    "gemini-argon": "gemini-web-argon",
+    "gemini-3.0-argon": "gemini-web-argon",
+    "gemini-web-2.5-pro": "gemini-web-2.5-pro",
+    "gemini-web-pro": "gemini-web-2.5-pro",
+    "gemini-web-2.5-flash": "gemini-web-2.5-flash",
+    "gemini-web-flash": "gemini-web-2.5-flash",
+    "gemini-web-default": "gemini-web-default",
 }
 
 # Curated static baseline fallback models (used if offline / unauthenticated)
@@ -492,6 +502,42 @@ BASELINE_MODELS: Dict[str, Dict[str, Any]] = {
         "recommended": True,
         "model": "MODEL_PLACEHOLDER_M187",
         "apiProvider": "API_PROVIDER_GOOGLE_GEMINI"
+    },
+    "gemini-web-argon": {
+        "displayName": "Gemini Argon (Web App Pro/Ultra)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_ARGON",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-2.5-pro": {
+        "displayName": "Gemini 2.5 Pro (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_25_PRO",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
+    },
+    "gemini-web-2.5-flash": {
+        "displayName": "Gemini 2.5 Flash (Web App)",
+        "supportsImages": True,
+        "supportsThinking": True,
+        "thinkingBudget": -1,
+        "minThinkingBudget": 32,
+        "maxTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "recommended": True,
+        "model": "MODEL_GEMINI_WEB_25_FLASH",
+        "apiProvider": "API_PROVIDER_GEMINI_WEB"
     }
 }
 
@@ -846,7 +892,11 @@ class ModelDiscoveryManager:
 
     def get_discovered_models(self, force_refresh: bool = False) -> List[DiscoveredModel]:
         """Return parsed DiscoveredModel objects."""
-        raw_models = self.fetch_models(force_refresh=force_refresh)
+        raw_models = dict(self.fetch_models(force_refresh=force_refresh) or {})
+        if isinstance(getattr(self.auth_manager, "auth_file", None), Path):
+            for gweb_id in ("gemini-web-argon", "gemini-web-2.5-pro", "gemini-web-2.5-flash"):
+                if gweb_id not in raw_models and gweb_id in BASELINE_MODELS:
+                    raw_models[gweb_id] = BASELINE_MODELS[gweb_id]
         models_list: List[DiscoveredModel] = []
 
         for model_id, m in raw_models.items():

@@ -6,7 +6,7 @@
 
 > **Bộ giải pháp mở rộng cao cấp cho Hermes Agent**, tích hợp toàn diện hệ thống mô hình AI tiên tiến từ tài khoản **Google Antigravity OAuth** (Gemini 2.5/3.7, Claude 3.5/3.7 Sonnet & Opus, GPT-OSS 120B), **Sinh ảnh AI** (Gemini 3.1 Flash Image) và **Sinh video điện ảnh Google Flow** (Google Veo 3.1 & Omni 1.1 Flash) vào Hermes Agent — hoạt động ổn định trên CLI, Telegram, Discord, TUI và Web Dashboard.
 
-**Phiên bản:** `v3.2.0 (Tháng 11/2026 - Proactive Quota-Aware Rotation Engine v2.0)`  
+**Phiên bản:** `v3.3.0 (Tháng 11/2026 - Gemini Web App Quota Bridge & Dedicated Web Pool v1.2)`  
 **Tác giả:** Nguyen Phap  
 **Bản quyền:** MIT / Apache 2.0  
 
@@ -34,18 +34,18 @@
     │              ANTIGRAVITY LOOPBACK BRIDGE ENGINE               │
     │                   (tools/antigravity_bridge)                  │
     ├───────────────────────────────┬───────────────────────────────┤
-    │  • OAuth 2.0 PKCE Multi-Acc   │  • Camofox Browser Bridge     │
-    │  • Credential Pool Strategies │  • reCAPTCHA Enterprise Token │
+    │  • OAuth 2.0 PKCE Multi-Acc   │  • Gemini Web App Quota Pool  │
+    │  • Credential Pool Strategies │  • Camofox Browser Bridge     │
     │  • Token Auto-Refresh Daemon  │  • Google Flow Generator      │
-    │  • 32+ Dynamic Model Catalog  │  • Local HTTP Proxy (v1 API)  │
+    │  • 35+ Dynamic Model Catalog  │  • Local HTTP Proxy (v1 API)  │
     └───────────────────────────────┴───────────────────────────────┘
 ```
 
 ### 1. 🧠 LLM Chat & Code Assist (`plugins/model-providers/antigravity`)
 - **Tương thích hoàn toàn OpenAI API**: Cung cấp máy chủ proxy cục bộ tại `http://127.0.0.1:8100/v1` (`/v1/chat/completions`, `/v1/models`).
-- **Dynamic Model Discovery (32+ Mô hình)**: Tự động khám phá danh mục mô hình theo quyền hạn tài khoản (Gemini 3.7 Flash/Pro, Gemini 2.5 Flash/Pro, Claude 3.5/3.7 Sonnet, Claude 3.7 Sonnet Thinking, Claude Opus 4.6, GPT-OSS 120B).
+- **Dynamic Model Discovery (35+ Mô hình)**: Tự động khám phá danh mục mô hình từ cả Google Cloud Code Assist VÀ Gemini Web App (`gemini-web-argon`, `gemini-web-2.5-pro`, `gemini-web-2.5-flash`, Gemini 3.7 Flash/Pro, Claude 3.5/3.7 Sonnet, Claude Opus 4.6, GPT-OSS 120B).
 - **Multi-Modal Vision**: Nhận diện và phân tích ảnh đính kèm (base64 hoặc URL) tự động chuyển đổi sang format `inlineData` của Google.
-- **Native Structured Tool Calling**: Dịch chuyển đổi mượt mà JSON Schema của OpenAI sang Google `functionDeclarations`, tuân thủ nghiêm ngặt chuẩn luân phiên tin nhắn (role alternation) của Hermes.
+- **Native Structured Tool Calling**: Dịch chuyển đổi mượt mà JSON Schema của OpenAI sang Google `functionDeclarations` (cùng giao thức `<antigravity_tool_protocol>` XML/JSON cho Gemini Web App), tuân thủ nghiêm ngặt chuẩn luân phiên tin nhắn (role alternation) của Hermes.
 - **Reasoning / Thinking Forwarding**: Hỗ trợ đầy đủ tham số tư duy (`thinking_config`) cho các dòng model Thinking.
 - **Daemon Auto-Wake**: Tự động kiểm tra và khởi động tiến trình cầu nối ngầm khi Hermes Agent cần, không yêu cầu khởi động thủ công.
 
@@ -81,12 +81,15 @@
 - **Tự động tải & gửi**: Tự động theo dõi tiến độ sinh video, tải file `.mp4` chuẩn về đĩa cứng (`~/.hermes/media/flow/`) và gửi thẳng vào Telegram/Discord.
 - **Kèm Skill chuyên dụng**: `skills/ai-video-generation` hướng dẫn bot tự động chọn `video_generate` thay vì tự ghép ảnh qua FFmpeg.
 
-### 5. 🌐 Web Dashboard & Runtime Dynamic Injector (`injector.py`)
+### 5. 🌐 Web Dashboard & Runtime Dynamic Injector (`injector.py` + `dashboard/plugin_api.py`)
 - **Nguyên lý Zero Core Modifications**: Không sửa đổi cố định các file git gốc của Hermes Agent.
-- **Monkey-Patching động trong RAM**: Tự động hook vào FastAPI Web Server lúc khởi động để tiêm giao diện thẻ Antigravity, bộ chọn mô hình (Model Picker) và các API quản lý tài khoản:
-  - `/api/credentials/providers/antigravity/accounts`
-  - `/api/credentials/providers/antigravity/oauth/start`
-  - `/api/credentials/providers/antigravity/oauth/poll`
+- **Giao diện Quản trị 7 Tab trên Web Dashboard**: Gắn kết tại `/api/plugins/antigravity/` gồm Overview, OAuth Account Pool, Model Catalog & Quotas, Google Flow Video Studio, Image Studio, **Gemini Web App Quota Pool**, và Doctor & Logs.
+
+### 6. 🌍 Cầu nối Hạn mức Gemini Web App (`gemini.google.com/app`) & Quản trị Web Pool Độc lập (`bridge/gemini_web`)
+- **Khai thác Bể Hạn mức Consumer Web Riêng biệt**: Tận dụng tối đa hạn mức trên `https://gemini.google.com/app` (**Gemini Argon** `gemini-web-argon`, **Gemini 2.5 Pro** `gemini-web-2.5-pro`, **Gemini 2.5 Flash** `gemini-web-2.5-flash`) ngay cả khi tài khoản OAuth Code Assist bị `0%` hoặc bị khóa ToS.
+- **`GeminiWebPoolManager` Độc lập (`~/.hermes/gemini_web_pool.json`)**: Quản lý các Node Web độc lập (`gweb_*`) có công tắc Bật/Tạm dừng riêng, bộ đếm hạn mức cửa sổ trượt 1h/24h theo từng họ mô hình (`argon`, `pro`, `flash`), tự động chuyển node sớm ở ngưỡng cảnh báo `<= 10%`, và duy trì ngữ cảnh phiên `[cid, rid, rcid]`.
+- **3 Chế độ Định tuyến Linh hoạt**: `hybrid_failover` (Ưu tiên Code Assist $\rightarrow$ tự động chuyển sang Gemini Web khi gặp 429/403), `web_first` (Ưu tiên dùng hạn mức Gemini Web trước để tiết kiệm quota Code Assist), và `isolated` (Chỉ gọi khi chỉ định rõ `gemini-web-*`).
+- **Tương thích 100% Tool-Calling của Hermes Agent (`GeminiWebToolAdapter`)**: Biên dịch hai chiều OpenAI `tools`/`tool_calls` $\leftrightarrow$ `<tool_call>` XML/JSON giúp `AIAgent` thực thi đa lượt các công cụ thực tế của Hermes (`terminal`, `read_file`, `write_file`,...) qua `BardFrontendService/StreamGenerate`.
 
 ---
 
