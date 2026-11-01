@@ -6,7 +6,7 @@
 
 > **Bộ giải pháp mở rộng cao cấp cho Hermes Agent**, tích hợp toàn diện hệ thống mô hình AI tiên tiến từ tài khoản **Google Antigravity OAuth** (Gemini 2.5/3.7, Claude 3.5/3.7 Sonnet & Opus, GPT-OSS 120B), **Sinh ảnh AI** (Gemini 3.1 Flash Image) và **Sinh video điện ảnh Google Flow** (Google Veo 3.1 & Omni 1.1 Flash) vào Hermes Agent — hoạt động ổn định trên CLI, Telegram, Discord, TUI và Web Dashboard.
 
-**Phiên bản:** `v3.1.0 (Tháng 09/2026 - Production Ready)`  
+**Phiên bản:** `v3.2.0 (Tháng 11/2026 - Proactive Quota-Aware Rotation Engine v2.0)`  
 **Tác giả:** Nguyen Phap  
 **Bản quyền:** MIT / Apache 2.0  
 
@@ -49,15 +49,16 @@
 - **Reasoning / Thinking Forwarding**: Hỗ trợ đầy đủ tham số tư duy (`thinking_config`) cho các dòng model Thinking.
 - **Daemon Auto-Wake**: Tự động kiểm tra và khởi động tiến trình cầu nối ngầm khi Hermes Agent cần, không yêu cầu khởi động thủ công.
 
-### 2. 🔑 OAuth 2.0 PKCE & Credential Pool (`tools/antigravity_bridge`)
-- **1-Click Browser Login**: Đăng nhập tài khoản Google trực quan qua trình duyệt bằng luồng OAuth 2.0 PKCE tiêu chuẩn, tự động nhận và lưu Refresh Token.
-- **Multi-Account Pool**: Quản lý song song nhiều tài khoản Google độc lập trên cùng một profile Hermes.
-- **4 Chiến lược cân bằng tải**:
-  - `fill_first`: Sử dụng cạn hạn mức tài khoản hiện tại rồi mới chuyển tiếp.
-  - `round_robin`: Xoay vòng tuần tự qua từng tài khoản sau mỗi lượt chat.
-  - `least_used`: Ưu tiên tài khoản có số lượt yêu cầu thấp nhất.
-  - `random`: Lựa chọn ngẫu nhiên tài khoản đang hoạt động.
-- **Tự động Cooldown & Chuyển giao lỗi**: Khi gặp mã lỗi `429 Too Many Requests` hoặc hết hạn mức, hệ thống tự động đưa tài khoản vào trạng thái `COOLING_DOWN` và chuyển sang tài khoản kế tiếp ngay lập tức.
+### 2. 🔑 OAuth 2.0 PKCE & Proactive Quota-Aware Account Rotation Engine v2.0 (`tools/antigravity_bridge`)
+- **1-Click Browser & Remote VPS Login**: Đăng nhập tài khoản Google trực quan qua trình duyệt hoặc từ xa trên Điện thoại/VPS bằng luồng OAuth 2.0 PKCE tiêu chuẩn, tự động nhận diện gói **Google AI Ultra / Pro / Free Tier** và lưu Refresh Token.
+- **4 Chiến lược xoay vòng chủ động tránh vượt hạn mức**:
+  - `sharded` (Mặc định): Phân tách tác vụ thông minh theo vai trò (`llm`, `image_gen`, `all`) kết hợp chấm điểm sức khỏe hạn mức (`HealthScore`).
+  - `round_robin`: Xoay vòng tuần tự qua các tài khoản khỏe mạnh ngay từ lượt gọi đầu tiên (`attempt == 0`), tự động tránh tài khoản đang bận (`in_flight > 0`).
+  - `fill_first`: Ưu tiên dùng tài khoản đang Active nhưng **tự động chuyển sớm khi hạn mức xuống ngưỡng cảnh báo `<= 10%` (`SOFT_QUOTA_HIGH_WATER_MARK_PCT`)** trước khi chạm lỗi `429`.
+  - `least_used`: Ưu tiên tài khoản có tổng số lượt yêu cầu thấp nhất.
+- **Chấm điểm sức khỏe theo Trọng số Gói (`compute_routing_health_score`)**: Ưu tiên định tuyến theo hạn mức còn lại nhân trọng số gói (**Ultra `1.5x`**, **Pro `1.25x`**, **Free `1.0x`**) trừ điểm phạt tải đồng thời (`in_flight`).
+- **Cô lập Cooldown theo Họ Mô hình (`model_cooldowns`) & Bóc tách `Retry-After` chính xác**: Khi một tài khoản chạm giới hạn ở nhánh **Claude/GPT**, chỉ nhánh `claude` tạm nghỉ theo đúng số giây `Retry-After` / Google RPC `retryDelay`; nhánh **Gemini** trên cùng tài khoản đó vẫn hoạt động bình thường.
+- **Async Non-Blocking Micro-Spacing & In-Flight Leases**: Giãn cách vi mô bất đồng bộ (`enforce_micro_spacing_async`) và quản lý lease (`acquire_lease`/`release_lease`) bảo vệ vòng lặp `asyncio` không bị nghẽn khi chạy đa tác vụ.
 - **Background Token Refresh Daemon**: Tự động theo dõi vòng đời access token và âm thầm gia hạn trước khi hết hạn (chặn hoàn toàn lỗi `401 Unauthorized`).
 
 ### 3. 🖼️ AI Image Generation Backend (`plugins/image_gen/antigravity`)

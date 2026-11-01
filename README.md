@@ -6,7 +6,7 @@
 
 > **Premium extension suite for Hermes Agent**, delivering end-to-end integration of top-tier AI models from **Google Antigravity OAuth** (Gemini 2.5/3.7, Claude 3.5/3.7 Sonnet & Opus, GPT-OSS 120B), **AI Image Generation** (Gemini 3.1 Flash Image), and **Cinematic AI Video Generation** (Google Flow Veo 3.1 & Omni 1.1 Flash) into Hermes Agent — across CLI, Telegram, Discord, TUI, and Web Dashboard.
 
-**Version:** `v3.1.0 (September 2026 - Production Ready)`  
+**Version:** `v3.2.0 (November 2026 - Proactive Quota-Aware Rotation Engine v2.0)`  
 **Author:** Nguyen Phap  
 **License:** MIT / Apache 2.0  
 
@@ -49,15 +49,16 @@
 - **Reasoning / Thinking Forwarding**: Full support for `thinking_config` on thinking-enabled models.
 - **Daemon Auto-Wake**: Automatically checks and starts the background bridge server on-demand without manual intervention.
 
-### 2. 🔑 OAuth 2.0 PKCE & Credential Pool (`tools/antigravity_bridge`)
-- **1-Click Browser Login**: Standard OAuth 2.0 PKCE flow via desktop browser, obtaining and persisting refresh tokens.
-- **Multi-Account Pool**: Run and balance multiple independent Google accounts within a single Hermes profile.
-- **4 Load Balancing Strategies**:
-  - `fill_first`: Exhaust current account's quota before rotating.
-  - `round_robin`: Sequential round-robin rotation across calls.
-  - `least_used`: Prioritize account with lowest invocation count.
-  - `random`: Uniformly random distribution across active accounts.
-- **Auto-Cooldown & Failover**: On `429 Too Many Requests` or quota exhaustion, automatically tags the account `COOLING_DOWN` and fails over to the next account immediately.
+### 2. 🔑 OAuth 2.0 PKCE & Proactive Quota-Aware Account Rotation Engine v2.0 (`tools/antigravity_bridge`)
+- **1-Click Browser & Remote VPS Login**: Standard OAuth 2.0 PKCE flow via desktop browser or remote mobile/VPS paste-back, automatically detecting **Google AI Ultra / Pro / Free Tier** entitlements and persisting refresh tokens.
+- **4 Proactive Quota-Aware Rotation Strategies**:
+  - `sharded` (Default): Task-based sharding across roles (`llm`, `image_gen`, `all`) ranked by composite quota health score (`HealthScore`).
+  - `round_robin`: Sequential load distribution across healthy accounts right from `attempt == 0`, automatically avoiding accounts with active in-flight requests (`in_flight > 0`).
+  - `fill_first`: Sticks to the active account until its remaining quota for the target model family drops to the **10% Soft High-Water Mark (`SOFT_QUOTA_HIGH_WATER_MARK_PCT = 10.0`)**, proactively switching before hitting `HTTP 429`.
+  - `least_used`: Prioritizes the healthy account with the lowest cumulative request count.
+- **Plan-Tier Weighted Health Score (`compute_routing_health_score`)**: Ranks candidate accounts by remaining model-family quota percentage multiplied by plan weight (**Ultra `1.5x`**, **Pro `1.25x`**, **Free `1.0x`**) minus concurrency and 429 penalties.
+- **Model-Family Cooldown Isolation (`model_cooldowns`) & Precision `Retry-After` Parsing**: Rate limits on **Claude/GPT** models cool down only the `claude` bucket using exact HTTP `Retry-After` or Google RPC `retryDelay` timestamps while keeping **Gemini** models active on the same account.
+- **Async Non-Blocking Micro-Spacing & In-Flight Leases**: Uses `enforce_micro_spacing_async` (`await asyncio.sleep`) and `acquire_lease`/`release_lease` guards so the FastAPI event loop never blocks under concurrent load.
 - **Background Token Refresh Daemon**: Silently renews expiring access tokens to eliminate `401 Unauthorized` errors.
 
 ### 3. 🖼️ AI Image Generation Backend (`plugins/image_gen/antigravity`)
