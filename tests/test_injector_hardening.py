@@ -43,6 +43,8 @@ class TestInjectorHardening:
 
     def test_patch_idempotency(self):
         """Calling patch_dashboard_ui multiple times must NEVER duplicate cards or routes."""
+        if not hasattr(ws, "_build_oauth_catalog"):
+            pytest.skip("Current hermes_cli.web_server version does not define _build_oauth_catalog")
         # Call patch multiple times
         for _ in range(5):
             patch_dashboard_ui()
@@ -65,6 +67,8 @@ class TestInjectorHardening:
 
     def test_fastapi_signature_preservation(self):
         """FastAPI route endpoints must preserve original parameters via functools.wraps."""
+        if not hasattr(ws, "_build_oauth_catalog"):
+            pytest.skip("Current hermes_cli.web_server version does not define OAuth provider routes")
         patch_dashboard_ui()
         app = ws.app
 
@@ -83,6 +87,8 @@ class TestInjectorHardening:
 
     def test_get_injection_health(self):
         """get_injection_health() must accurately report patch health."""
+        if not hasattr(ws, "_build_oauth_catalog"):
+            pytest.skip("Current hermes_cli.web_server version does not define _build_oauth_catalog")
         patch_dashboard_ui()
         patch_cli_auth()
 

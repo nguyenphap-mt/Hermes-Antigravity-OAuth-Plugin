@@ -982,7 +982,7 @@
                       ]),
                     ]),
 
-                    // Plan, Role, and Status tags
+                    // Plan, Role, Health Score, and Status tags
                     h("div", { className: "flex flex-wrap items-center gap-1.5" }, [
                       h("span", {
                         className: planBadgeCls,
@@ -991,17 +991,34 @@
                       h("span", {
                         className: "ag-badge ag-badge-neutral",
                       }, "Role: " + (acc.role || "all").toUpperCase()),
+                      acc.health_score != null && !isDisabled && h("span", {
+                        className: "ag-badge " + (acc.health_score >= 100 ? "ag-badge-cyan" : (acc.health_score > 15 ? "ag-badge-emerald" : "ag-badge-amber")),
+                        title: "Điểm sức khỏe định tuyến (Quota % × Trọng số Gói - Phạt tải đồng thời)",
+                      }, "Score: " + Math.round(acc.health_score)),
                       isDisabled
                         ? h("span", {
                             className: "ag-badge ag-badge-red",
                           }, "BỊ KHÓA")
-                        : isCooling
-                          ? h("span", {
-                              className: "ag-badge ag-badge-amber",
-                            }, "Cooldown: " + acc.cooldown_seconds + "s")
-                          : h("span", {
-                              className: "ag-badge ag-badge-emerald",
-                            }, "READY"),
+                        : (acc.model_cooldowns && (acc.model_cooldowns.claude || acc.model_cooldowns.gemini))
+                          ? [
+                              acc.model_cooldowns.claude && h("span", {
+                                key: "cd-claude",
+                                className: "ag-badge ag-badge-amber",
+                                title: "Nhánh Claude/GPT đang tạm nghỉ; nhánh Gemini vẫn khả dụng",
+                              }, "Claude CD: " + acc.model_cooldowns.claude + "s"),
+                              acc.model_cooldowns.gemini && h("span", {
+                                key: "cd-gemini",
+                                className: "ag-badge ag-badge-amber",
+                                title: "Nhánh Gemini đang tạm nghỉ; nhánh Claude/GPT vẫn khả dụng",
+                              }, "Gemini CD: " + acc.model_cooldowns.gemini + "s"),
+                            ]
+                          : isCooling
+                            ? h("span", {
+                                className: "ag-badge ag-badge-amber",
+                              }, "Cooldown: " + acc.cooldown_seconds + "s")
+                            : h("span", {
+                                className: "ag-badge ag-badge-emerald",
+                              }, "READY"),
                       h("span", {
                         className: "ag-badge ag-badge-neutral",
                         style: { marginLeft: "auto" },
