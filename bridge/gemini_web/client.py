@@ -375,14 +375,18 @@ class GeminiWebClient:
                 return {"ok": False, "error": f"No valid OAuth credentials found for linked node '{node.email}'."}
 
             # Order candidate credentials: target_email first (if not disabled), then other enabled accounts, then disabled as last resort
+            def _cred_tier_rank(c: Any) -> int:
+                t = f"{getattr(c, 'tier_id', '') or ''} {getattr(c, 'plan_name', '') or ''}".lower()
+                return 2 if "ultra" in t else (1 if "pro" in t else 0)
+
             primary_healthy = [
                 c for c in all_creds
                 if target_email and (c.email or "").strip().lower() == target_email and not getattr(c, "disabled", False)
             ]
-            other_healthy = [
-                c for c in all_creds
-                if not getattr(c, "disabled", False) and c not in primary_healthy
-            ]
+            other_healthy = sorted(
+                [c for c in all_creds if not getattr(c, "disabled", False) and c not in primary_healthy],
+                key=lambda c: -_cred_tier_rank(c),
+            )
             fallback_disabled = [
                 c for c in all_creds
                 if c not in primary_healthy and c not in other_healthy
@@ -448,34 +452,38 @@ class GeminiWebClient:
                     if dm not in primary_models:
                         primary_models.insert(0, dm)
 
-            # Prepare refreshed credentials and project IDs once
-            prepared_creds: List[Tuple[Any, str]] = []
-            for creds in candidate_creds:
-                if creds.is_expired and creds.refresh_token:
-                    try:
-                        creds = auth_mgr.refresh_access_token(creds)
-                    except Exception:
-                        continue
-                effective_proj = (
-                    getattr(creds, "managed_project_id", None)
-                    or getattr(creds, "project_id", None)
-                    or DEFAULT_PROJECT_ID
-                )
-                if not effective_proj or effective_proj == DEFAULT_PROJECT_ID:
-                    resolved_pid = auth_mgr.resolve_project_id(creds)
-                    if resolved_pid:
-                        effective_proj = resolved_pid
-                prepared_creds.append((creds, effective_proj))
-
             resp = None
             locked_emails: Set[str] = set()
+            refreshed_cache: Dict[str, Tuple[Any, str]] = {}
             # Pass 1: Try requested model family (primary_models) across ALL healthy accounts first
             # Pass 2: Fall back to cross-family models only if no healthy account supports the primary family
             for model_tier_group in (primary_models, fallback_models):
-                for creds, effective_proj in prepared_creds:
-                    c_email = (getattr(creds, "email", "") or "").strip().lower()
+                for raw_creds in candidate_creds:
+                    c_email = (getattr(raw_creds, "email", "") or "").strip().lower()
                     if c_email and c_email in locked_emails:
                         continue
+                    cache_key = c_email or str(id(raw_creds))
+                    if cache_key in refreshed_cache:
+                        creds, effective_proj = refreshed_cache[cache_key]
+                    else:
+                        creds = raw_creds
+                        if creds.is_expired and creds.refresh_token:
+                            try:
+                                creds = auth_mgr.refresh_access_token(creds)
+                            except Exception:
+                                if c_email:
+                                    locked_emails.add(c_email)
+                                continue
+                        effective_proj = (
+                            getattr(creds, "managed_project_id", None)
+                            or getattr(creds, "project_id", None)
+                            or DEFAULT_PROJECT_ID
+                        )
+                        if not effective_proj or effective_proj == DEFAULT_PROJECT_ID:
+                            resolved_pid = auth_mgr.resolve_project_id(creds)
+                            if resolved_pid:
+                                effective_proj = resolved_pid
+                        refreshed_cache[cache_key] = (creds, effective_proj)
                     for upstream_model in model_tier_group:
                         prompt_id = str(uuid.uuid4())
                         envelope = {
