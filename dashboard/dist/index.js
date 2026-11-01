@@ -206,6 +206,12 @@
           h("line", { x1: 17, x2: 22, y1: 7, y2: 7 }),
           h("line", { x1: 17, x2: 22, y1: 17, y2: 17 })
         );
+      case "globe":
+        return h("svg", p,
+          h("circle", { cx: 12, cy: 12, r: 10 }),
+          h("path", { d: "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" }),
+          h("path", { d: "M2 12h20" })
+        );
       default:
         return h("svg", p, h("circle", { cx: 12, cy: 12, r: 10 }));
     }
@@ -347,6 +353,7 @@
     // -------------------------------------------------------------------------
     var tabs = [
       { id: "oauth", label: "OAuth & Models", icon: "shield", count: null },
+      { id: "gemini_web", label: "Gemini Web App", icon: "globe", count: null },
       { id: "flow", label: "Google Flow Video", icon: "video", count: null },
       { id: "image", label: "Image Gen Studio", icon: "image", count: null },
       { id: "doctor", label: "Doctor & Logs", icon: "activity", count: null },
@@ -373,6 +380,8 @@
     var contentNode;
     if (activeTab === "oauth") {
       contentNode = h(TabOAuthAndModels, { notify: notify, daemonRunning: daemon.running });
+    } else if (activeTab === "gemini_web") {
+      contentNode = h(TabGeminiWebPool, { notify: notify });
     } else if (activeTab === "flow") {
       contentNode = h(TabGoogleFlow, { notify: notify });
     } else if (activeTab === "image") {
@@ -385,6 +394,735 @@
       headerNode,
       navNode,
       contentNode,
+    ]);
+  }
+
+  // ===========================================================================
+  // TAB 1B: DEDICATED GEMINI WEB APP POOL MANAGER (`gemini.google.com/app`)
+  // ===========================================================================
+  function TabGeminiWebPool(props) {
+    var notify = props.notify;
+    var poolState = useState({
+      config: {
+        routing_mode: "hybrid_failover",
+        rotation_strategy: "sticky_session",
+        auto_rotate_cookies: true,
+        preserve_server_context: true,
+      },
+      total_nodes: 0,
+      ready_nodes: 0,
+      nodes: [],
+    });
+    var pool = poolState[0];
+    var setPool = poolState[1];
+
+    var loadingState = useState(false);
+    var loading = loadingState[0];
+    var setLoading = loadingState[1];
+
+    var showImportModalState = useState(false);
+    var showImportModal = showImportModalState[0];
+    var setShowImportModal = showImportModalState[1];
+
+    var showAdvancedPasteState = useState(false);
+    var showAdvancedPaste = showAdvancedPasteState[0];
+    var setShowAdvancedPaste = showAdvancedPasteState[1];
+
+    var webOauthState = useState({ loading: false, session_id: "", auth_url: "", callback_url: "" });
+    var webOauth = webOauthState[0];
+    var setWebOauth = webOauthState[1];
+
+    var importFormState = useState({
+      email: "",
+      display_name: "",
+      psid: "",
+      psidts: "",
+      raw_cookie_input: "",
+      node_id: "",
+    });
+    var importForm = importFormState[0];
+    var setImportForm = importFormState[1];
+
+    var testModalNodeState = useState(null);
+    var testModalNode = testModalNodeState[0];
+    var setTestModalNode = testModalNodeState[1];
+
+    var testModelState = useState("gemini-web-argon");
+    var testModel = testModelState[0];
+    var setTestModel = testModelState[1];
+
+    var testPromptState = useState("Xin chào! Hãy xác nhận bạn đang phản hồi từ Gemini Web App (Argon/Pro).");
+    var testPrompt = testPromptState[0];
+    var setTestPrompt = testPromptState[1];
+
+    var testResultState = useState(null);
+    var testResult = testResultState[0];
+    var setTestResult = testResultState[1];
+
+    var fetchWebPool = useCallback(function () {
+      apiFetch("/gemini-web/pool").then(function (res) {
+        if (res && res.ok) {
+          setPool(res);
+        }
+      }).catch(function (e) {
+        console.debug("Gemini Web pool fetch error:", e);
+      });
+    }, []);
+
+    useEffect(function () {
+      fetchWebPool();
+      var timer = setInterval(fetchWebPool, 10000);
+      return function () { clearInterval(timer); };
+    }, [fetchWebPool]);
+
+    function openAutoCaptureModal(existingNode) {
+      if (existingNode) {
+        setImportForm({
+          email: existingNode.email || "",
+          display_name: existingNode.display_name || "",
+          psid: "",
+          psidts: "",
+          raw_cookie_input: "",
+          node_id: existingNode.node_id || "",
+        });
+      } else {
+        setImportForm({ email: "", display_name: "", psid: "", psidts: "", raw_cookie_input: "", node_id: "" });
+      }
+      setShowAdvancedPaste(false);
+      setShowImportModal(true);
+      setWebOauth({ loading: true, session_id: "", auth_url: "", callback_url: "" });
+      apiFetch("/accounts/login-start", { method: "POST" }).then(function (res) {
+        if (res && res.ok && res.auth_url) {
+          setWebOauth({
+            loading: false,
+            session_id: res.session_id,
+            auth_url: res.auth_url,
+            callback_url: "",
+          });
+        } else {
+          setWebOauth({ loading: false, session_id: "", auth_url: "", callback_url: "" });
+        }
+      }).catch(function () {
+        setWebOauth({ loading: false, session_id: "", auth_url: "", callback_url: "" });
+      });
+    }
+
+    function handleAutoCaptureHandshake() {
+      setLoading(true);
+      apiFetch("/gemini-web/handshake/start", { method: "POST" }).then(function (res) {
+        if (res && res.ok && res.imported_count > 0) {
+          notify(res.message || ("Đã tự động bắt " + res.imported_count + " Node Gemini Web!"), "success");
+          if (res.pool) setPool(res.pool);
+          else fetchWebPool();
+          setShowImportModal(false);
+        } else if (res && res.auth_url) {
+          setWebOauth({
+            loading: false,
+            session_id: res.session_id || "",
+            auth_url: res.auth_url,
+            callback_url: "",
+          });
+          notify("Hãy nhấn '1. Mở Trang Đăng Nhập Google' bên dưới để xác thực tài khoản mới!", "info");
+        } else {
+          notify((res && (res.message || res.error)) || "Chưa tìm thấy phiên có sẵn.", "warning");
+        }
+      }).catch(function (e) {
+        notify("Lỗi bắt tự động: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleWebOAuthSubmit() {
+      if (!webOauth.session_id || !webOauth.callback_url || !webOauth.callback_url.trim()) {
+        notify("Vui lòng dán đường link kết quả (http://127.0.0.1:51121/oauth-callback?code=...) vào ô Bước 2.", "warning");
+        return;
+      }
+      setLoading(true);
+      apiFetch("/accounts/login-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: webOauth.session_id,
+          callback_url: webOauth.callback_url.trim(),
+        }),
+      }).then(function (res) {
+        if (res && res.ok) {
+          notify(res.message || ("Đã tự động thêm & đồng bộ Node Web: " + (res.email || "")), "success");
+          setShowImportModal(false);
+          fetchWebPool();
+        } else {
+          notify((res && (res.message || res.error)) || "Xác thực Google thất bại.", "error");
+        }
+      }).catch(function (e) {
+        notify("Lỗi xác thực OAuth: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleUpdateConfig(patch) {
+      setLoading(true);
+      apiFetch("/gemini-web/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).then(function (res) {
+        if (res.ok) {
+          notify(res.message, "success");
+          fetchWebPool();
+        }
+      }).catch(function (e) {
+        notify("Lỗi cập nhật cấu hình Gemini Web: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleImportSubmit() {
+      setLoading(true);
+      apiFetch("/gemini-web/nodes/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(importForm),
+      }).then(function (res) {
+        if (res.node) {
+          notify(res.message || "Đã lưu node Gemini Web!", res.ok ? "success" : "warning");
+          setShowImportModal(false);
+          setImportForm({ email: "", display_name: "", psid: "", psidts: "", raw_cookie_input: "", node_id: "" });
+          fetchWebPool();
+        } else {
+          notify(res.error || "Không thể nhập Cookie Gemini Web", "error");
+        }
+      }).catch(function (e) {
+        notify("Lỗi nhập Cookie: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleSyncBrowser() {
+      setLoading(true);
+      apiFetch("/gemini-web/nodes/sync-browser", { method: "POST" }).then(function (res) {
+        notify(res.message || res.error || "Đã đồng bộ từ Browser & Google Pool", res.ok ? "success" : "warning");
+        if (res && res.pool) {
+          setPool(res.pool);
+        } else {
+          fetchWebPool();
+        }
+      }).catch(function (e) {
+        notify("Lỗi đồng bộ từ Browser Profile: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleRotateNode(nodeId) {
+      setLoading(true);
+      apiFetch("/gemini-web/nodes/rotate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_id: nodeId || null }),
+      }).then(function (res) {
+        notify(res.message || "Đã xoay Cookie", res.ok ? "success" : "warning");
+        fetchWebPool();
+      }).catch(function (e) {
+        notify("Lỗi xoay Cookie: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleToggleNode(nodeId) {
+      apiFetch("/gemini-web/nodes/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_id: nodeId }),
+      }).then(function (res) {
+        notify(res.message, "success");
+        fetchWebPool();
+      }).catch(function (e) {
+        notify("Lỗi bật/tắt node: " + e.message, "error");
+      });
+    }
+
+    function handleDeleteNode(nodeId) {
+      apiFetch("/gemini-web/nodes/" + encodeURIComponent(nodeId), {
+        method: "DELETE",
+      }).then(function (res) {
+        notify(res.message || "Đã xóa node", "success");
+        fetchWebPool();
+      }).catch(function (e) {
+        notify("Lỗi xóa node: " + e.message, "error");
+      });
+    }
+
+    function handleRunTest() {
+      setLoading(true);
+      setTestResult({ loading: true });
+      apiFetch("/gemini-web/nodes/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          node_id: testModalNode ? testModalNode.node_id : null,
+          model: testModel,
+          prompt: testPrompt,
+        }),
+      }).then(function (res) {
+        setTestResult(res);
+        fetchWebPool();
+      }).catch(function (e) {
+        setTestResult({ ok: false, error: e.message });
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function renderQuotaBar(label, used1h, lim1h, used24h, lim24h, remPct) {
+      var barColor = remPct <= 10 ? "#ef4444" : remPct <= 30 ? "#f59e0b" : "#10b981";
+      return h("div", { className: "space-y-1", key: label }, [
+        h("div", { className: "flex items-center justify-between text-xs" }, [
+          h("span", { className: "text-zinc-300 font-semibold" }, label),
+          h("span", { className: "font-mono text-zinc-400" },
+            "Còn " + remPct + "% • 1h: " + used1h + "/" + lim1h + " • 24h: " + used24h + "/" + lim24h
+          ),
+        ]),
+        h("div", {
+          style: { width: "100%", height: "6px", background: "#18181b", borderRadius: "9999px", overflow: "hidden" },
+        }, [
+          h("div", {
+            style: {
+              width: Math.max(2, Math.min(100, remPct)) + "%",
+              height: "100%",
+              background: barColor,
+              transition: "width .3s ease",
+            },
+          }),
+        ]),
+      ]);
+    }
+
+    var cfg = pool.config || {};
+
+    return h("div", { className: "space-y-6" }, [
+      // 1. Global Control Bar for Gemini Web Pool
+      h("div", { className: "ag-card space-y-4", key: "gweb-header" }, [
+        h("div", { className: "flex flex-col md:flex-row md:items-center justify-between gap-4" }, [
+          h("div", null, [
+            h("div", { className: "flex items-center gap-2" }, [
+              h(Icon, { name: "globe", className: "w-5 h-5 text-emerald-400" }),
+              h("h2", { className: "text-sm sm:text-base font-bold text-white" },
+                "Quản Lý Bể Gemini Web App Độc Lập (gemini.google.com/app)"
+              ),
+              h("span", { className: "ag-badge ag-badge-emerald" },
+                pool.ready_nodes + "/" + pool.total_nodes + " NODE SẴN SÀNG"
+              ),
+            ]),
+            h("p", { className: "text-xs text-zinc-400 mt-1" },
+              "Khai thác hạn mức Gemini Argon, Gemini 2.5 Pro & 2.5 Flash trực tiếp trên nền Web App (hoạt động độc lập ngay cả khi tài khoản bị hết hoặc khóa quota Code Assist)."
+            ),
+          ]),
+          h("div", { className: "flex flex-wrap items-center gap-2" }, [
+            h("button", {
+              onClick: function () {
+                openAutoCaptureModal(null);
+              },
+              className: "ag-btn ag-btn-primary",
+            }, [
+              h(Icon, { name: "zap", className: "w-3.5 h-3.5" }),
+              h("span", null, "+ Thêm Node Web (Tự Động)"),
+            ]),
+            h("button", {
+              disabled: loading,
+              onClick: handleSyncBrowser,
+              className: "ag-btn ag-btn-secondary",
+            }, [
+              h(Icon, { name: "refresh", className: "w-3.5 h-3.5 " + (loading ? "animate-spin" : "") }),
+              h("span", null, loading ? "Đang đồng bộ..." : "Đồng Bộ Từ Browser"),
+            ]),
+            h("button", {
+              disabled: loading || pool.total_nodes === 0,
+              onClick: function () { handleRotateNode(null); },
+              className: "ag-btn ag-btn-amber",
+            }, [
+              h(Icon, { name: "rotate", className: "w-3.5 h-3.5" }),
+              h("span", null, "Xoay Cookie Toàn Bể"),
+            ]),
+          ]),
+        ]),
+
+        // Routing Mode & Strategy Selectors
+        h("div", {
+          className: "grid grid-cols-1 md:grid-cols-2 gap-4 pt-3",
+          style: { borderTop: "1px solid rgba(255,255,255,0.08)" },
+        }, [
+          h("div", { className: "space-y-1.5" }, [
+            h("label", { className: "text-xs font-semibold text-zinc-300 block" }, "Chế Độ Định Tuyến Giữa Code Assist & Gemini Web:"),
+            h("select", {
+              className: "ag-select w-full",
+              value: cfg.routing_mode || "hybrid_failover",
+              onChange: function (e) { handleUpdateConfig({ routing_mode: e.target.value }); },
+            }, [
+              h("option", { value: "hybrid_failover" }, "Hybrid Failover — Tự động tràn sang Gemini Web khi Code Assist <=10% hoặc 429/403"),
+              h("option", { value: "web_first" }, "Web-First — Ưu tiên dùng hết Quota Gemini Web trước cho mọi model Gemini"),
+              h("option", { value: "isolated" }, "Isolated — Tách biệt 100% (Chỉ dùng bể Web khi chọn model gemini-web-*)"),
+            ]),
+          ]),
+          h("div", { className: "space-y-1.5" }, [
+            h("label", { className: "text-xs font-semibold text-zinc-300 block" }, "Chiến Lược Xoay Vòng Riêng Cho Bể Gemini Web:"),
+            h("select", {
+              className: "ag-select w-full",
+              value: cfg.rotation_strategy || "sticky_session",
+              onChange: function (e) { handleUpdateConfig({ rotation_strategy: e.target.value }); },
+            }, [
+              h("option", { value: "sticky_session" }, "Sticky Session — Giữ ngữ cảnh hội thoại [cid, rid, rcid] phía server Google"),
+              h("option", { value: "least_used" }, "Least-Used — Ưu tiên Node còn nhiều % Quota Argon/Pro nhất"),
+              h("option", { value: "round_robin" }, "Round-Robin — Chia đều lượt gọi giữa các Node Web"),
+            ]),
+          ]),
+        ]),
+      ]),
+
+      // 2. Node Cards Grid
+      pool.nodes && pool.nodes.length > 0
+        ? h("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4", key: "gweb-nodes" },
+            pool.nodes.map(function (node) {
+              var q = node.quota_summary || {};
+              var ck = node.cookie_health || {};
+              var isReady = node.enabled && node.status === "ready" && ck.has_1psid;
+              return h("div", {
+                key: node.node_id,
+                className: "ag-subcard space-y-3 " + (isReady ? "ag-subcard-active" : !node.enabled ? "ag-subcard-disabled" : ""),
+              }, [
+                // Header
+                h("div", { className: "flex items-start justify-between gap-2" }, [
+                  h("div", { className: "flex items-center gap-2.5 min-w-0" }, [
+                    h("div", {
+                      className: "ag-avatar " + (isReady ? "ag-avatar-active" : "ag-avatar-disabled"),
+                    }, (node.display_name || "GW").slice(0, 2).toUpperCase()),
+                    h("div", { className: "min-w-0" }, [
+                      h("div", { className: "text-xs font-bold text-white truncate" }, node.display_name),
+                      h("div", { className: "text-xs text-zinc-400 font-mono truncate" }, node.email || node.node_id),
+                    ]),
+                  ]),
+                  h("div", { className: "flex flex-wrap items-center gap-1.5" }, [
+                    h("span", {
+                      className: "ag-badge " + (node.detected_tier === "ultra" || node.detected_tier === "pro" ? "ag-badge-emerald" : "ag-badge-neutral"),
+                    }, node.tier_badge || "GOOGLE AI PRO"),
+                    h("span", {
+                      className: "ag-badge " + (isReady ? "ag-badge-emerald" : "ag-badge-amber"),
+                    }, !node.enabled ? "PAUSED" : node.status.toUpperCase()),
+                  ]),
+                ]),
+
+                // Cookie Health Telemetry
+                h("div", {
+                  className: "p-2.5 rounded-lg text-xs font-mono space-y-1",
+                  style: { background: "#050609", border: "1px solid rgba(255,255,255,0.06)" },
+                }, [
+                  h("div", { className: "flex items-center justify-between" }, [
+                    h("span", { className: "text-zinc-400" }, "Phiên Google / Cookie 1PSID:"),
+                    h("span", { className: ck.has_1psid ? "text-emerald-400" : "text-red-400" },
+                      ck.has_1psid ? ("OK (" + (ck.psid_preview || "linked") + ")") : "Thiếu Phiên"
+                    ),
+                  ]),
+                  h("div", { className: "flex items-center justify-between" }, [
+                    h("span", { className: "text-zinc-400" }, "CSRF SNlM0e & Tự xoay 9m:"),
+                    h("span", { className: ck.has_snlm0e ? "text-emerald-400" : "text-amber-400" },
+                      ck.has_snlm0e
+                        ? ("Hợp lệ • Xoay sau " + Math.ceil((ck.seconds_until_next_rotation || 0) / 60) + "p")
+                        : "Chưa lấy SNlM0e"
+                    ),
+                  ]),
+                ]),
+
+                // Available Web Models Chips
+                h("div", { className: "flex flex-wrap items-center gap-1.5" },
+                  (node.available_models || []).map(function (m) {
+                    return h("span", {
+                      key: m.id,
+                      className: "ag-badge ag-badge-neutral",
+                    }, m.label + " (" + m.id + ")");
+                  })
+                ),
+
+                // Sliding-Window Quota Bars
+                h("div", { className: "space-y-2 pt-1" }, [
+                  renderQuotaBar(
+                    "Gemini Argon (Pro/Ultra)",
+                    q.argon_1h_count || 0,
+                    q.argon_1h_limit || 40,
+                    q.argon_24h_count || 0,
+                    q.argon_24h_limit || 200,
+                    q.argon_remaining_pct != null ? q.argon_remaining_pct : 100
+                  ),
+                  renderQuotaBar(
+                    "Gemini 2.5 Pro",
+                    q.pro_1h_count || 0,
+                    q.pro_1h_limit || 50,
+                    q.pro_24h_count || 0,
+                    q.pro_24h_limit || 300,
+                    q.pro_remaining_pct != null ? q.pro_remaining_pct : 100
+                  ),
+                  renderQuotaBar(
+                    "Gemini 2.5 Flash",
+                    q.flash_1h_count || 0,
+                    q.flash_1h_limit || 200,
+                    q.flash_24h_count || 0,
+                    q.flash_24h_limit || 1500,
+                    q.flash_remaining_pct != null ? q.flash_remaining_pct : 100
+                  ),
+                ]),
+
+                node.last_error && h("div", { className: "text-xs text-amber-400 font-mono truncate" },
+                  "Lưu ý: " + node.last_error
+                ),
+
+                // Action Bar
+                h("div", {
+                  className: "flex flex-wrap items-center justify-between gap-2 pt-2",
+                  style: { borderTop: "1px solid rgba(255,255,255,0.06)" },
+                }, [
+                  h("div", { className: "flex flex-wrap items-center gap-1.5" }, [
+                    h("button", {
+                      onClick: function () { handleToggleNode(node.node_id); },
+                      className: "ag-btn ag-btn-sm " + (node.enabled ? "ag-btn-secondary" : "ag-btn-primary"),
+                    }, node.enabled ? "Tạm dừng" : "Bật lại"),
+                    h("button", {
+                      onClick: function () { handleRotateNode(node.node_id); },
+                      className: "ag-btn ag-btn-secondary ag-btn-sm",
+                    }, "Xoay Cookie"),
+                    h("button", {
+                      onClick: function () {
+                        openAutoCaptureModal(node);
+                      },
+                      className: "ag-btn ag-btn-secondary ag-btn-sm",
+                    }, "Làm mới phiên"),
+                    h("button", {
+                      onClick: function () {
+                        setTestModalNode(node);
+                        setTestResult(null);
+                      },
+                      className: "ag-btn ag-btn-primary ag-btn-sm",
+                    }, "Test Argon/Web"),
+                  ]),
+                  h("button", {
+                    onClick: function () { handleDeleteNode(node.node_id); },
+                    className: "ag-btn ag-btn-danger ag-btn-sm",
+                  }, "Xóa"),
+                ]),
+              ]);
+            })
+          )
+        : h("div", { className: "ag-card text-center py-8 space-y-3", key: "gweb-empty" }, [
+            h("div", { className: "text-sm font-bold text-white" },
+              "Chưa có Node nào trong Bể Gemini Web App"
+            ),
+            h("p", { className: "text-xs text-zinc-400 max-w-lg mx-auto" },
+              "Nhấn 'Đồng Bộ Từ Browser' hoặc '+ Thêm Node Web (Tự Động)' để tự động bắt phiên Google (Email, Gói Pro/Ultra, Cookie & Hạn mức Argon/Pro) chỉ với 1 chạm!"
+            ),
+            h("div", { className: "pt-2 flex justify-center gap-2" }, [
+              h("button", {
+                disabled: loading,
+                onClick: handleSyncBrowser,
+                className: "ag-btn ag-btn-primary",
+              }, [
+                h(Icon, { name: "zap", className: "w-3.5 h-3.5" }),
+                h("span", null, "Bắt Tự Động Từ Browser / Google Pool"),
+              ]),
+            ]),
+          ]),
+
+      // 3. Automatic Node Capture & Google Login Modal (Zero manual 5-field typing)
+      showImportModal && h("div", { className: "ag-modal-backdrop", key: "gweb-import-modal" }, [
+        h("div", { className: "ag-modal-dialog space-y-4" }, [
+          h("div", {
+            className: "flex items-center justify-between pb-3",
+            style: { borderBottom: "1px solid rgba(255,255,255,0.08)" },
+          }, [
+            h("div", { className: "flex items-center gap-2.5" }, [
+              h("div", { className: "ag-avatar ag-avatar-ready", style: { width: "34px", height: "34px" } },
+                h(Icon, { name: "zap", className: "w-4 h-4" })
+              ),
+              h("div", null, [
+                h("h3", { className: "text-sm font-bold text-white" },
+                  "Kết Nối Tự Động Node Gemini Web App"
+                ),
+                h("p", { className: "text-xs text-zinc-400" },
+                  "Tự động phát hiện Email, Tên hiển thị, Gói Pro/Ultra & CSRF Token (Không cần nhập tay)"
+                ),
+              ]),
+            ]),
+            h("button", {
+              onClick: function () { setShowImportModal(false); },
+              className: "ag-btn ag-btn-secondary ag-btn-sm",
+            }, "Đóng"),
+          ]),
+
+          // Option 1: 1-Click Auto-Sync from Browser / Camofox / Flow / Google Pool
+          h("div", { className: "ag-subcard space-y-2.5" }, [
+            h("div", { className: "flex items-center justify-between" }, [
+              h("span", { className: "text-xs font-bold text-emerald-400" },
+                "Cách 1 (Khuyên dùng): Tự Động Bắt 1-Chạm Từ Trình Duyệt & Google Pool"
+              ),
+              h("span", { className: "ag-badge ag-badge-emerald" }, "AUTO 1-CLICK"),
+            ]),
+            h("p", { className: "text-xs text-zinc-400 leading-relaxed" },
+              "Tự động quét và trích xuất toàn bộ phiên Google đang đăng nhập từ Browser Profile (Camofox / Flow Storage State) và Bể Google OAuth sẵn có trên hệ thống mà không cần nhập bất kỳ thông tin nào."
+            ),
+            h("button", {
+              disabled: loading,
+              onClick: handleAutoCaptureHandshake,
+              className: "ag-btn ag-btn-primary w-full justify-center",
+            }, [
+              h(Icon, { name: "zap", className: "w-4 h-4 " + (loading ? "animate-spin" : "") }),
+              h("span", null, loading ? "Đang tự động quét & bắt phiên Google..." : "🚀 Bắt Tự Động Từ Browser / Google Pool Ngay"),
+            ]),
+          ]),
+
+          // Option 2: Direct Google Login on Mobile / Browser (OAuth PKCE Auto-Link)
+          h("div", { className: "ag-subcard space-y-2.5" }, [
+            h("div", { className: "text-xs font-bold text-cyan-400" },
+              "Cách 2: Đăng Nhập Tài Khoản Google Mới (Trực Tiếp Trên Điện Thoại / Web)"
+            ),
+            h("p", { className: "text-xs text-zinc-400 leading-relaxed" },
+              "Bước 1: Mở trang đăng nhập Google, chọn tài khoản Gmail muốn thêm. Bước 2: Copy thanh địa chỉ kết quả (http://127.0.0.1:51121/oauth-callback?code=...) dán vào ô dưới để hệ thống tự động lấy Email, Gói Pro/Ultra và gắn thẳng vào bể Gemini Web:"
+            ),
+            h("div", { className: "flex flex-wrap items-center gap-2" }, [
+              webOauth.auth_url
+                ? h("a", {
+                    href: webOauth.auth_url,
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    className: "ag-btn ag-btn-primary ag-btn-sm",
+                  }, [
+                    h(Icon, { name: "key", className: "w-3.5 h-3.5" }),
+                    h("span", null, "1. Mở Trang Đăng Nhập Google ↗"),
+                  ])
+                : h("span", { className: "text-xs text-zinc-500" },
+                    webOauth.loading ? "Đang tạo link đăng nhập Google..." : "Nhấn Bắt Tự Động để tạo link"
+                  ),
+              webOauth.auth_url && h("button", {
+                onClick: function () {
+                  if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(webOauth.auth_url).catch(function () {});
+                  }
+                  notify("Đã sao chép link đăng nhập Google!", "info");
+                },
+                className: "ag-btn ag-btn-secondary ag-btn-sm",
+              }, "Copy Link"),
+            ]),
+            h("div", { className: "flex flex-col sm:flex-row gap-2 pt-1" }, [
+              h("input", {
+                type: "text",
+                className: "ag-input flex-1 font-mono text-xs",
+                placeholder: "Bước 2: Dán link http://127.0.0.1:51121/oauth-callback?code=... vào đây",
+                value: webOauth.callback_url,
+                onChange: function (e) {
+                  setWebOauth(Object.assign({}, webOauth, { callback_url: e.target.value }));
+                },
+              }),
+              h("button", {
+                disabled: loading,
+                onClick: handleWebOAuthSubmit,
+                className: "ag-btn ag-btn-primary ag-btn-sm",
+              }, loading ? "Đang xác thực..." : "2. Xác Nhận & Gắn Node"),
+            ]),
+          ]),
+
+          // Option 3: Collapsible 1-Box Smart Auto-Parser (Advanced)
+          h("div", { className: "space-y-2" }, [
+            h("button", {
+              onClick: function () { setShowAdvancedPaste(!showAdvancedPaste); },
+              className: "ag-btn ag-btn-secondary ag-btn-sm w-full justify-between",
+            }, [
+              h("span", null, "📋 Tùy chọn nâng cao: Dán nhanh 1 ô (Cookie-Editor JSON / cURL — Tự bóc tách 100%)"),
+              h("span", null, showAdvancedPaste ? "▲ Thu gọn" : "▼ Mở rộng"),
+            ]),
+            showAdvancedPaste && h("div", { className: "ag-subcard space-y-2.5 text-xs" }, [
+              h("p", { className: "text-zinc-400" },
+                "Chỉ cần dán 1 ô duy nhất (mảng JSON từ Cookie-Editor, lệnh cURL, hoặc storage-state.json). Hệ thống tự động bóc tách Cookie, Email, Tên hiển thị và Gói Pro/Ultra:"
+              ),
+              h("textarea", {
+                className: "ag-textarea w-full font-mono",
+                rows: 3,
+                placeholder: "Dán mảng JSON Cookie-Editor, lệnh cURL, hoặc chuỗi Cookie từ gemini.google.com/app...",
+                value: importForm.raw_cookie_input,
+                onChange: function (e) {
+                  setImportForm(Object.assign({}, importForm, { raw_cookie_input: e.target.value }));
+                },
+              }),
+              h("div", { className: "flex justify-end" }, [
+                h("button", {
+                  disabled: loading,
+                  onClick: handleImportSubmit,
+                  className: "ag-btn ag-btn-primary ag-btn-sm",
+                }, loading ? "Đang phân tích & kết nối..." : "Tự Động Bóc Tách & Kết Nối"),
+              ]),
+            ]),
+          ]),
+        ]),
+      ]),
+
+      // 4. Live Test Playground Modal
+      testModalNode && h("div", { className: "ag-modal-backdrop", key: "gweb-test-modal" }, [
+        h("div", { className: "ag-modal-dialog space-y-4" }, [
+          h("div", { className: "flex items-center justify-between" }, [
+            h("h3", { className: "text-sm font-bold text-white" },
+              "Test Trực Tiếp Gemini Web App: " + (testModalNode.display_name || testModalNode.node_id)
+            ),
+            h("button", {
+              onClick: function () { setTestModalNode(null); },
+              className: "ag-btn ag-btn-secondary ag-btn-sm",
+            }, "Đóng"),
+          ]),
+          h("div", { className: "space-y-3 text-xs" }, [
+            h("div", null, [
+              h("label", { className: "text-zinc-400 block mb-1" }, "Chọn Model Nhánh Web:"),
+              h("select", {
+                className: "ag-select w-full",
+                value: testModel,
+                onChange: function (e) { setTestModel(e.target.value); },
+              }, [
+                h("option", { value: "gemini-web-argon" }, "Gemini Argon (gemini-web-argon — Pro/Ultra)"),
+                h("option", { value: "gemini-web-2.5-pro" }, "Gemini 2.5 Pro (gemini-web-2.5-pro)"),
+                h("option", { value: "gemini-web-2.5-flash" }, "Gemini 2.5 Flash (gemini-web-2.5-flash)"),
+              ]),
+            ]),
+            h("div", null, [
+              h("label", { className: "text-zinc-400 block mb-1" }, "Câu lệnh kiểm thử:"),
+              h("textarea", {
+                className: "ag-textarea w-full",
+                rows: 3,
+                value: testPrompt,
+                onChange: function (e) { setTestPrompt(e.target.value); },
+              }),
+            ]),
+            testResult && h("div", {
+              className: "p-3 rounded-lg font-mono text-xs space-y-1.5",
+              style: { background: "#050609", border: "1px solid rgba(255,255,255,0.1)" },
+            }, [
+              testResult.loading
+                ? h("div", { className: "text-amber-400" }, "Đang gửi yêu cầu tới gemini.google.com/app...")
+                : testResult.ok
+                ? h("div", { className: "space-y-1" }, [
+                    h("div", { className: "text-emerald-400 font-bold" },
+                      "THÀNH CÔNG (" + testResult.latency_ms + " ms) • Model: " + testResult.model
+                    ),
+                    h("div", { className: "text-zinc-200 whitespace-pre-wrap" }, testResult.reply),
+                  ])
+                : h("div", { className: "text-red-400" }, "Lỗi: " + (testResult.error || "Unknown error")),
+            ]),
+          ]),
+          h("div", { className: "flex items-center justify-end gap-2" }, [
+            h("button", {
+              disabled: loading,
+              onClick: handleRunTest,
+              className: "ag-btn ag-btn-primary",
+            }, loading ? "Đang chạy..." : "Gửi Lệnh Test"),
+          ]),
+        ]),
+      ]),
     ]);
   }
 

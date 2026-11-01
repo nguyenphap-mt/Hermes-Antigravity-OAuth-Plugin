@@ -703,11 +703,16 @@ async def submit_oauth_login(req: AccountLoginSubmitRequest):
         pool = _get_ag_account_pool()
         acc = pool.add_or_update_account(creds, reset_status=True)
         pool.set_active_account(acc.email)
+        try:
+            gweb_pool = _get_gemini_web_pool()
+            await _auto_sync_gemini_web_pool(gweb_pool)
+        except Exception:
+            pass
         return {
             "ok": True,
             "email": acc.email,
             "project_id": creds.project_id,
-            "message": f"Đăng nhập Google OAuth thành công: {acc.email}",
+            "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể Gemini Web: {acc.email}",
         }
     except Exception as e:
         logger.error(f"OAuth login-submit failed: {e}")
@@ -1193,8 +1198,30 @@ async def run_doctor_checks():
             message=f"Lỗi kiểm tra tệp: {e}",
         ))
 
+    # 7. Dedicated Gemini Web App Pool Check
+    try:
+        gweb_pool = _get_gemini_web_pool()
+        snap = gweb_pool.get_dashboard_pool_snapshot()
+        r_nodes = snap.get("ready_nodes", 0)
+        t_nodes = snap.get("total_nodes", 0)
+        r_mode = snap.get("config", {}).get("routing_mode", "hybrid_failover")
+        checks.append(DoctorCheckItem(
+            id="gemini_web_pool",
+            label="Gemini Web App Quota Pool",
+            status="ok" if r_nodes > 0 else "info",
+            message=f"{r_nodes}/{t_nodes} node sẵn sàng ({r_mode})" if t_nodes > 0 else "Chưa gắn node Web (Tùy chọn)",
+            detail="Khai thác hạn mức Gemini Argon / 2.5 Pro / 2.5 Flash từ gemini.google.com/app.",
+        ))
+    except Exception as e:
+        checks.append(DoctorCheckItem(
+            id="gemini_web_pool",
+            label="Gemini Web App Quota Pool",
+            status="warn",
+            message=f"Lỗi kiểm tra bể Gemini Web: {e}",
+        ))
+
     # Compute overall score
-    ok_count = sum(1 for c in checks if c.status == "ok")
+    ok_count = sum(1 for c in checks if c.status in ("ok", "info"))
     score = int((ok_count / len(checks)) * 100) if checks else 0
     all_good = not any(c.status == "error" for c in checks)
 
@@ -1227,4 +1254,412 @@ async def get_recent_logs(lines: int = Query(default=100, ge=10, le=500)):
         }
     except Exception as e:
         return {"ok": False, "lines": [], "error": str(e), "log_file": str(log_file), "count": 0}
+
+
+# ─── Dedicated Gemini Web App Pool Management Endpoints ───────────────────────
+
+def _get_gemini_web_pool():
+    try:
+        from tools.antigravity_bridge.gemini_web import GeminiWebPoolManager
+    except ImportError:
+        from bridge.gemini_web import GeminiWebPoolManager
+    return GeminiWebPoolManager(hermes_dir=_get_hermes_dir())
+
+
+def _get_gemini_web_client(pool=None):
+    try:
+        from tools.antigravity_bridge.gemini_web import GeminiWebClient
+    except ImportError:
+        from bridge.gemini_web import GeminiWebClient
+    return GeminiWebClient(pool_manager=pool or _get_gemini_web_pool())
+
+
+class GeminiWebConfigRequest(BaseModel):
+    routing_mode: Optional[str] = None  # "hybrid_failover" | "web_first" | "isolated"
+    rotation_strategy: Optional[str] = None  # "sticky_session" | "least_used" | "round_robin"
+    auto_rotate_cookies: Optional[bool] = None
+    preserve_server_context: Optional[bool] = None
+    proactive_switch_remaining_pct: Optional[float] = None
+
+
+class GeminiWebNodeImportRequest(BaseModel):
+    raw_cookie_input: str = ""
+    psid: str = ""
+    psidts: str = ""
+    email: str = ""
+    display_name: str = ""
+    node_id: str = ""
+    linked_oauth_account_id: str = ""
+    verify_immediately: bool = True
+
+
+class GeminiWebNodeToggleRequest(BaseModel):
+    node_id: str
+    enabled: Optional[bool] = None
+
+
+class GeminiWebNodeLimitsRequest(BaseModel):
+    node_id: str
+    argon_hourly_limit: Optional[int] = None
+    argon_daily_limit: Optional[int] = None
+    pro_hourly_limit: Optional[int] = None
+    pro_daily_limit: Optional[int] = None
+    flash_hourly_limit: Optional[int] = None
+    flash_daily_limit: Optional[int] = None
+    default_web_model: Optional[str] = None
+    reset_usage: bool = False
+
+
+class GeminiWebNodeRotateRequest(BaseModel):
+    node_id: Optional[str] = None  # If None or empty, rotates all nodes in pool
+
+
+class GeminiWebNodeTestRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    node_id: Optional[str] = None
+    model: str = "gemini-web-argon"
+    prompt: str = "Xin chào! Hãy xác nhận ngắn gọn bạn đang hoạt động qua Gemini Web App."
+
+
+_GWEB_HANDSHAKE_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+
+async def _auto_sync_gemini_web_pool(pool) -> List[Dict[str, Any]]:
+    """Auto-discover and import/update nodes from local Browser profiles, Camofox, Flow, and Google OAuth Pool."""
+    discovered = pool.session_manager.discover_cookies_from_local_browser_profiles(
+        include_system_profiles=True
+    )
+    imported_nodes: List[Dict[str, Any]] = []
+    for item in discovered:
+        cookies = item.get("cookies") or {}
+        res = await pool.import_or_update_node(
+            psid=cookies.get("__Secure-1PSID", ""),
+            psidts=cookies.get("__Secure-1PSIDTS", ""),
+            raw_cookie_input="; ".join(f"{k}={v}" for k, v in cookies.items()),
+            email=item.get("email") or "",
+            display_name=item.get("display_name") or "",
+            linked_oauth_account_id=item.get("linked_oauth_account_id") or "",
+            verify_immediately=True,
+        )
+        if res.get("node"):
+            imported_nodes.append(res["node"])
+    return imported_nodes
+
+
+@router.get("/gemini-web/pool")
+async def get_gemini_web_pool():
+    """Return full status, configuration, and sliding-window quota ledger of the Dedicated Gemini Web Pool."""
+    try:
+        pool = _get_gemini_web_pool()
+        if not pool.list_nodes():
+            try:
+                await _auto_sync_gemini_web_pool(pool)
+            except Exception as sync_err:
+                logger.debug("Auto-bootstrap Gemini Web Pool skipped: %s", sync_err)
+        return pool.get_dashboard_pool_snapshot()
+    except Exception as e:
+        logger.error("Failed to fetch Gemini Web Pool snapshot: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gemini-web/config")
+async def update_gemini_web_config(req: GeminiWebConfigRequest):
+    """Update global routing mode, rotation strategy, and context settings for the Gemini Web Pool."""
+    try:
+        pool = _get_gemini_web_pool()
+        cfg = pool.update_config(
+            routing_mode=req.routing_mode,
+            rotation_strategy=req.rotation_strategy,
+            auto_rotate_cookies=req.auto_rotate_cookies,
+            preserve_server_context=req.preserve_server_context,
+            proactive_switch_remaining_pct=req.proactive_switch_remaining_pct,
+        )
+        return {
+            "ok": True,
+            "message": f"Đã cập nhật cấu hình bể Gemini Web (Mode: {cfg.get('routing_mode')}, Strategy: {cfg.get('rotation_strategy')}).",
+            "config": cfg,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gemini-web/nodes/import")
+async def import_gemini_web_node(req: GeminiWebNodeImportRequest):
+    """Import or update a Gemini Web App node from Cookie string, JSON Cookie-Editor, cURL, or 2 fields."""
+    try:
+        pool = _get_gemini_web_pool()
+        res = await pool.import_or_update_node(
+            raw_cookie_input=req.raw_cookie_input,
+            psid=req.psid,
+            psidts=req.psidts,
+            email=req.email,
+            display_name=req.display_name,
+            node_id=req.node_id,
+            linked_oauth_account_id=req.linked_oauth_account_id,
+            verify_immediately=req.verify_immediately,
+        )
+        if not res.get("ok") and not res.get("node"):
+            return {"ok": False, "error": res.get("error") or "Không thể nhập Cookie Gemini Web."}
+        node_info = res.get("node") or {}
+        hs = res.get("handshake") or {}
+        msg = (
+            f"Đã gắn thành công Gemini Web Node ({node_info.get('display_name')}) — Gói: {node_info.get('tier_badge')}"
+            if hs.get("ok")
+            else f"Đã lưu Cookie cho {node_info.get('display_name')} nhưng xác thực trực tuyến chưa hoàn tất: {hs.get('error', '')}"
+        )
+        return {
+            "ok": bool(hs.get("ok", True)),
+            "message": msg,
+            "node": node_info,
+            "handshake": hs,
+        }
+    except Exception as e:
+        logger.error("Failed importing Gemini Web node: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/gemini-web/nodes/sync-browser")
+async def sync_gemini_web_nodes_from_browser():
+    """Auto-discover and import `.google.com` cookies & Google sessions from Browser/Camofox/Flow/OAuth Pool."""
+    try:
+        pool = _get_gemini_web_pool()
+        imported_nodes = await _auto_sync_gemini_web_pool(pool)
+        if not imported_nodes:
+            return {
+                "ok": False,
+                "imported_count": 0,
+                "message": "Chưa tìm thấy phiên Google nào trong Browser Profile hoặc OAuth Pool. Hãy bấm '+ Thêm Node Web (Tự Động)' để đăng nhập Google 1-Chạm!",
+            }
+
+        emails_str = ", ".join(
+            n.get("email") or n.get("display_name") or n.get("node_id")
+            for n in imported_nodes[:5]
+        )
+        return {
+            "ok": True,
+            "imported_count": len(imported_nodes),
+            "nodes": imported_nodes,
+            "pool": pool.get_dashboard_pool_snapshot(),
+            "message": f"Đã tự động bắt & đồng bộ {len(imported_nodes)} Node Gemini Web ({emails_str})!",
+        }
+    except Exception as e:
+        return {"ok": False, "imported_count": 0, "error": str(e)}
+
+
+@router.post("/gemini-web/handshake/start")
+async def start_gemini_web_auto_handshake():
+    """1-Click Automatic Session Capture for Gemini Web App:
+    1. Immediately scans & imports existing Browser / Camofox / Flow / Google OAuth sessions.
+    2. If running on Desktop with GUI display and no nodes exist yet, launches Playwright to gemini.google.com/app.
+    """
+    try:
+        pool = _get_gemini_web_pool()
+        imported_nodes = await _auto_sync_gemini_web_pool(pool)
+        session_id = f"gweb_hs_{int(time.time() * 1000)}"
+
+        if imported_nodes:
+            emails = [n.get("email") or n.get("display_name") for n in imported_nodes]
+            _GWEB_HANDSHAKE_SESSIONS[session_id] = {
+                "session_id": session_id,
+                "status": "completed",
+                "imported_count": len(imported_nodes),
+                "emails": emails,
+                "message": f"Đã tự động bắt thành công {len(imported_nodes)} phiên Google ({', '.join(emails[:4])})!",
+            }
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "status": "completed",
+                "imported_count": len(imported_nodes),
+                "nodes": imported_nodes,
+                "pool": pool.get_dashboard_pool_snapshot(),
+                "message": _GWEB_HANDSHAKE_SESSIONS[session_id]["message"],
+            }
+
+        # No existing local profiles found; return auth_url for 1-click Google OAuth login
+        auth_mgr = _get_ag_auth_manager()
+        pkce = auth_mgr.create_pkce_auth_session()
+        _PKCE_SESSIONS[pkce["session_id"]] = pkce
+        return {
+            "ok": True,
+            "session_id": pkce["session_id"],
+            "status": "oauth_ready",
+            "auth_url": pkce["auth_url"],
+            "redirect_uri": pkce["redirect_uri"],
+            "message": "Mở liên kết đăng nhập Google để tự động gắn Node vào bể Gemini Web.",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e), "message": f"Lỗi khởi tạo bắt tự động: {e}"}
+
+
+@router.get("/gemini-web/handshake/poll/{session_id}")
+async def poll_gemini_web_auto_handshake(session_id: str):
+    """Poll status of an ongoing 1-Click Gemini Web Handshake."""
+    info = _GWEB_HANDSHAKE_SESSIONS.get(session_id)
+    if not info:
+        pool = _get_gemini_web_pool()
+        snap = pool.get_dashboard_pool_snapshot()
+        return {
+            "ok": True,
+            "status": "completed" if snap.get("total_nodes", 0) > 0 else "pending",
+            "pool": snap,
+        }
+    return {"ok": True, **info}
+
+
+
+@router.post("/gemini-web/nodes/toggle")
+async def toggle_gemini_web_node(req: GeminiWebNodeToggleRequest):
+    """Enable or pause a specific Gemini Web node independently of Code Assist."""
+    try:
+        pool = _get_gemini_web_pool()
+        node = pool.toggle_node(req.node_id, enabled=req.enabled)
+        if not node:
+            raise HTTPException(status_code=404, detail=f"Node '{req.node_id}' not found.")
+        state_str = "ĐANG BẬT (Active)" if node.enabled else "TẠM DỪNG (Paused)"
+        return {
+            "ok": True,
+            "message": f"Node '{node.display_name}' đã chuyển sang trạng thái: {state_str}",
+            "node": pool.format_node_for_dashboard(node),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gemini-web/nodes/limits")
+async def update_gemini_web_node_limits(req: GeminiWebNodeLimitsRequest):
+    """Update hourly/daily sliding-window quota limits, default model, or reset counters for a node."""
+    try:
+        pool = _get_gemini_web_pool()
+        limits_update = {}
+        for field_name in (
+            "argon_hourly_limit",
+            "argon_daily_limit",
+            "pro_hourly_limit",
+            "pro_daily_limit",
+            "flash_hourly_limit",
+            "flash_daily_limit",
+        ):
+            val = getattr(req, field_name, None)
+            if val is not None:
+                limits_update[field_name] = int(val)
+
+        node = pool.update_node_limits(
+            node_id=req.node_id,
+            limits=limits_update if limits_update else None,
+            default_web_model=req.default_web_model,
+            reset_usage=req.reset_usage,
+        )
+        if not node:
+            raise HTTPException(status_code=404, detail=f"Node '{req.node_id}' not found.")
+        return {
+            "ok": True,
+            "message": f"Đã cập nhật trần hạn mức & bộ đếm cho node '{node.display_name}'.",
+            "node": pool.format_node_for_dashboard(node),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gemini-web/nodes/rotate")
+async def rotate_gemini_web_cookies(req: GeminiWebNodeRotateRequest):
+    """Force rotate `__Secure-1PSIDTS` (`RotateCookies`) and refresh `SNlM0e` + models for one or all nodes."""
+    try:
+        pool = _get_gemini_web_pool()
+        target_nodes = [pool.get_node(req.node_id)] if req.node_id else pool.list_nodes()
+        target_nodes = [n for n in target_nodes if n is not None]
+        if not target_nodes:
+            return {"ok": False, "message": "Không tìm thấy node Gemini Web nào để xoay Cookie."}
+
+        results = []
+        for n in target_nodes:
+            rot_ok, rot_msg = await pool.session_manager.rotate_1psidts(n.node_id)
+            probe = await pool.session_manager.handshake_and_probe_models(n.node_id)
+            if probe.get("ok"):
+                n.status = "ready"
+                if probe.get("detected_tier"):
+                    n.detected_tier = probe["detected_tier"]
+                if probe.get("available_models"):
+                    n.available_models = probe["available_models"]
+                if probe.get("email") and not n.email:
+                    n.email = probe["email"]
+                n.last_error = ""
+            else:
+                n.status = str(probe.get("status") or "expired")
+                n.last_error = str(probe.get("error") or rot_msg)
+            results.append(
+                {
+                    "node_id": n.node_id,
+                    "rotate_ok": rot_ok,
+                    "handshake_ok": bool(probe.get("ok")),
+                    "message": rot_msg if probe.get("ok") else probe.get("error"),
+                }
+            )
+
+        # Persist updated node statuses
+        cfg = pool.get_config()
+        pool._save_pool_raw(cfg, pool.list_nodes())
+        ok_cnt = sum(1 for r in results if r["handshake_ok"] or r["rotate_ok"])
+        return {
+            "ok": ok_cnt > 0,
+            "message": f"Đã xoay Cookie & kiểm tra phiên cho {ok_cnt}/{len(results)} node Gemini Web.",
+            "results": results,
+            "pool": pool.get_dashboard_pool_snapshot(),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/gemini-web/nodes/test")
+async def test_gemini_web_node_inference(req: GeminiWebNodeTestRequest):
+    """Execute a live inference test against `gemini.google.com/app` on the selected node & model."""
+    t0 = time.time()
+    try:
+        pool = _get_gemini_web_pool()
+        client = _get_gemini_web_client(pool)
+        payload = {
+            "model": req.model or "gemini-web-argon",
+            "messages": [{"role": "user", "content": req.prompt}],
+        }
+        completion = await client.create_chat_completion(
+            payload,
+            preferred_node_id=req.node_id or "",
+        )
+        latency_ms = int((time.time() - t0) * 1000)
+        choice = (completion.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        return {
+            "ok": True,
+            "latency_ms": latency_ms,
+            "node_id": completion.get("x_gemini_web_node"),
+            "model": completion.get("x_gemini_web_model") or req.model,
+            "reply": msg.get("content") or "",
+            "reasoning": msg.get("reasoning_content") or "",
+        }
+    except Exception as e:
+        latency_ms = int((time.time() - t0) * 1000)
+        return {
+            "ok": False,
+            "latency_ms": latency_ms,
+            "error": str(e),
+        }
+
+
+@router.delete("/gemini-web/nodes/{node_id}")
+async def delete_gemini_web_node(node_id: str):
+    """Remove a node and its encrypted cookies from the Gemini Web Pool."""
+    try:
+        pool = _get_gemini_web_pool()
+        if pool.remove_node(node_id):
+            return {"ok": True, "message": f"Đã xóa node Gemini Web: {node_id}"}
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
