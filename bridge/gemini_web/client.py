@@ -371,28 +371,24 @@ class GeminiWebClient:
             auth_mgr = AntigravityAuthManager(auth_file=auth_file) if auth_file.is_file() else AntigravityAuthManager()
             target_email = (node.email or node.linked_oauth_account_id or "").strip().lower()
             all_creds = auth_mgr.load_all_stored_credentials()
-            creds = None
-            for c in all_creds:
-                if target_email and (c.email or "").strip().lower() == target_email:
-                    creds = c
-                    break
-            if not creds and all_creds:
-                creds = all_creds[0]
-            if not creds:
+            if not all_creds:
                 return {"ok": False, "error": f"No valid OAuth credentials found for linked node '{node.email}'."}
 
-            if creds.is_expired and creds.refresh_token:
-                creds = auth_mgr.refresh_access_token(creds)
+            # Order candidate credentials: target_email first (if not disabled), then other enabled accounts, then disabled as last resort
+            primary_healthy = [
+                c for c in all_creds
+                if target_email and (c.email or "").strip().lower() == target_email and not getattr(c, "disabled", False)
+            ]
+            other_healthy = [
+                c for c in all_creds
+                if not getattr(c, "disabled", False) and c not in primary_healthy
+            ]
+            fallback_disabled = [
+                c for c in all_creds
+                if c not in primary_healthy and c not in other_healthy
+            ]
+            candidate_creds = primary_healthy + other_healthy + fallback_disabled
 
-            effective_proj = (
-                getattr(creds, "managed_project_id", None)
-                or getattr(creds, "project_id", None)
-                or DEFAULT_PROJECT_ID
-            )
-            if not effective_proj or effective_proj == DEFAULT_PROJECT_ID:
-                resolved_pid = auth_mgr.resolve_project_id(creds)
-                if resolved_pid:
-                    effective_proj = resolved_pid
             m_low = (model_name or "").lower()
             if "4-argon-low" in m_low:
                 candidate_models = ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
@@ -418,27 +414,49 @@ class GeminiWebClient:
                 candidate_models = ["gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-2.5-flash"]
 
             resp = None
-            for upstream_model in candidate_models:
-                prompt_id = str(uuid.uuid4())
-                envelope = {
-                    "model": upstream_model,
-                    "project": effective_proj,
-                    "user_prompt_id": prompt_id,
-                    "request": {
-                        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-                        "generationConfig": {"temperature": 0.4},
-                    },
-                }
-                headers = build_antigravity_headers(
-                    creds.access_token,
-                    effective_proj,
-                    prompt_id=prompt_id,
-                    trajectory_id=str(uuid.uuid4()),
+            for creds in candidate_creds:
+                if creds.is_expired and creds.refresh_token:
+                    try:
+                        creds = auth_mgr.refresh_access_token(creds)
+                    except Exception:
+                        continue
+
+                effective_proj = (
+                    getattr(creds, "managed_project_id", None)
+                    or getattr(creds, "project_id", None)
+                    or DEFAULT_PROJECT_ID
                 )
-                resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-                if resp.status_code in {404, 429, 500, 502, 503, 504}:
-                    resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-                if resp.status_code == 200:
+                if not effective_proj or effective_proj == DEFAULT_PROJECT_ID:
+                    resolved_pid = auth_mgr.resolve_project_id(creds)
+                    if resolved_pid:
+                        effective_proj = resolved_pid
+
+                for upstream_model in candidate_models:
+                    prompt_id = str(uuid.uuid4())
+                    envelope = {
+                        "model": upstream_model,
+                        "project": effective_proj,
+                        "user_prompt_id": prompt_id,
+                        "request": {
+                            "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+                            "generationConfig": {"temperature": 0.4},
+                        },
+                    }
+                    headers = build_antigravity_headers(
+                        creds.access_token,
+                        effective_proj,
+                        prompt_id=prompt_id,
+                        trajectory_id=str(uuid.uuid4()),
+                    )
+                    resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+                    if resp.status_code in {404, 429, 500, 502, 503, 504}:
+                        resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
+                    if resp.status_code == 200:
+                        break
+                    # Account-level lock/auth failure: skip remaining models on this account and try next healthy account
+                    if resp.status_code in {401, 403}:
+                        break
+                if resp is not None and resp.status_code == 200:
                     break
 
             if resp is None or resp.status_code != 200:
