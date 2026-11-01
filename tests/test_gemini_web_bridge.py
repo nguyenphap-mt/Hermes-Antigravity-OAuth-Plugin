@@ -411,3 +411,40 @@ def test_discover_cookies_from_flow_storage_state_and_oauth_pool(tmp_path: Path)
     assert by_email["thietbibenthanh.data@gmail.com"]["detected_tier"] == "pro"
 
 
+def test_resolve_pkce_session_matches_state_when_session_id_lost_on_mobile(monkeypatch, tmp_path):
+    import dashboard.plugin_api as papi
+
+    store_file = tmp_path / "pkce_sessions.json"
+    monkeypatch.setattr(papi, "_get_pkce_store_file", lambda: store_file)
+    papi._PKCE_SESSIONS.clear()
+
+    now = time.time()
+    papi._PKCE_SESSIONS["sess_older"] = {
+        "session_id": "sess_older",
+        "state": "state_abc_111",
+        "code_verifier": "ver_111",
+        "redirect_uri": "http://localhost:51121/oauth-callback",
+        "created_at": now - 30,
+        "expires_at": now + 600,
+    }
+    papi._PKCE_SESSIONS["sess_newer"] = {
+        "session_id": "sess_newer",
+        "state": "state_xyz_222",
+        "code_verifier": "ver_222",
+        "redirect_uri": "http://localhost:51121/oauth-callback",
+        "created_at": now - 5,
+        "expires_at": now + 600,
+    }
+    papi._save_pkce_sessions()
+    papi._PKCE_SESSIONS.clear()
+
+    # Even if mobile browser reloads and sends empty or newer session_id, state=state_abc_111 in callback_url wins
+    matched = papi._resolve_pkce_session(
+        session_id="",
+        callback_url="http://localhost:51121/oauth-callback?state=state_abc_111&code=4/0AeanS0_test",
+    )
+    assert matched is not None
+    assert matched["session_id"] == "sess_older"
+    assert matched["code_verifier"] == "ver_111"
+
+

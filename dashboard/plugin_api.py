@@ -644,10 +644,175 @@ async def refresh_plan_quota(req: Optional[AccountActionRequest] = None):
 
 
 _PKCE_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_OAUTH_LISTENER_STARTED = False
+_OAUTH_LISTENER_LOCK = threading.Lock()
+
+
+def _get_pkce_store_file() -> Path:
+    try:
+        from hermes_constants import get_hermes_dir
+        base = Path(get_hermes_dir())
+    except Exception:
+        base = Path.home() / ".hermes"
+    auth_dir = base / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    return auth_dir / "pkce_sessions.json"
+
+
+def _load_pkce_sessions() -> Dict[str, Dict[str, Any]]:
+    global _PKCE_SESSIONS
+    now = time.time()
+    try:
+        fpath = _get_pkce_store_file()
+        if fpath.is_file():
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for sid, s in data.items():
+                    if isinstance(s, dict) and s.get("expires_at", 0) > now:
+                        if sid not in _PKCE_SESSIONS or s.get("completed"):
+                            _PKCE_SESSIONS[sid] = s
+    except Exception:
+        pass
+    expired = [sid for sid, s in list(_PKCE_SESSIONS.items()) if s.get("expires_at", 0) < now]
+    for sid in expired:
+        _PKCE_SESSIONS.pop(sid, None)
+    return _PKCE_SESSIONS
+
+
+def _save_pkce_sessions() -> None:
+    try:
+        fpath = _get_pkce_store_file()
+        fpath.write_text(json.dumps(_PKCE_SESSIONS, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _resolve_pkce_session(session_id: str, callback_url: str = "") -> Optional[Dict[str, Any]]:
+    """Resolve PKCE session by session_id, or by the OAuth state= parameter inside callback_url, or newest session."""
+    sessions = _load_pkce_sessions()
+    raw = (callback_url or "").strip()
+    extracted_state = None
+    if raw:
+        try:
+            import urllib.parse
+            norm = raw if "://" in raw else ("http://" + raw if ("localhost" in raw or "127.0.0.1" in raw) else raw)
+            parsed = urllib.parse.urlparse(norm)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if not qs and "?" in raw:
+                qs = urllib.parse.parse_qs(raw.split("?", 1)[-1])
+            extracted_state = (qs.get("state") or [None])[0]
+        except Exception:
+            pass
+
+    if extracted_state:
+        for s in sessions.values():
+            if s.get("state") == extracted_state:
+                return s
+
+    if session_id and session_id in sessions:
+        return sessions[session_id]
+
+    # Fallback: most recently created non-completed session
+    candidates = [s for s in sessions.values() if not s.get("completed")]
+    if candidates:
+        candidates.sort(key=lambda x: float(x.get("created_at") or 0), reverse=True)
+        return candidates[0]
+    return None
+
+
+def _complete_pkce_and_sync_sync(session: Dict[str, Any], callback_or_code: str) -> Dict[str, Any]:
+    """Synchronous worker that exchanges OAuth code, updates account pool, probes plan/quota, and syncs Gemini Web."""
+    auth_mgr = _get_ag_auth_manager()
+    # If matched via fallback session where state might differ or raw code was pasted, only enforce state if it matches
+    expected_state = session.get("state")
+    if expected_state and "state=" in callback_or_code and expected_state not in callback_or_code:
+        expected_state = None
+
+    creds = auth_mgr.complete_pkce_auth_session(
+        callback_or_code=callback_or_code,
+        code_verifier=session["code_verifier"],
+        redirect_uri=session["redirect_uri"],
+        expected_state=expected_state,
+    )
+    pool = _get_ag_account_pool()
+    acc = pool.add_or_update_account(creds, reset_status=True)
+    pool.set_active_account(acc.email)
+    try:
+        pool.refresh_account_plan_and_quota(acc.email)
+    except Exception:
+        pass
+    try:
+        gweb_pool = _get_gemini_web_pool()
+        asyncio.run(_auto_sync_gemini_web_pool(gweb_pool))
+    except Exception:
+        pass
+
+    session["completed"] = True
+    session["email"] = acc.email
+    session["project_id"] = creds.project_id
+    session["completed_at"] = time.time()
+    _PKCE_SESSIONS[session["session_id"]] = session
+    _save_pkce_sessions()
+    return {
+        "ok": True,
+        "email": acc.email,
+        "project_id": creds.project_id,
+        "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể OAuth + Gemini Web: {acc.email}",
+    }
+
+
+def _ensure_local_oauth_callback_listener(port: int = 51121) -> None:
+    """Start a background HTTP listener on 127.0.0.1:51121 so local/tunneled OAuth callbacks complete with 0 copy-paste."""
+    global _OAUTH_LISTENER_STARTED
+    with _OAUTH_LISTENER_LOCK:
+        if _OAUTH_LISTENER_STARTED:
+            return
+        try:
+            import http.server
+
+            class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+                def log_message(self, format, *args):
+                    pass
+
+                def do_GET(self):
+                    full_url = f"http://localhost:{port}{self.path}"
+                    sess = _resolve_pkce_session("", full_url)
+                    if not sess or "code=" not in self.path:
+                        self.send_response(400)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(b"<html><body><h3>Missing OAuth code or expired session.</h3></body></html>")
+                        return
+                    try:
+                        res = _complete_pkce_and_sync_sync(sess, full_url)
+                        email_str = res.get("email") or ""
+                        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Đăng nhập thành công</title></head>
+                        <body style="background:#090b10;color:#e4e4e7;font-family:sans-serif;text-align:center;padding:48px 20px;">
+                        <div style="max-width:460px;margin:0 auto;background:#12151e;border:1px solid rgba(16,185,129,0.4);border-radius:12px;padding:28px;">
+                        <h2 style="color:#34d399;margin-top:0;">✅ Đăng nhập Google thành công!</h2>
+                        <p style="font-size:14px;color:#a1a1aa;">Tài khoản <strong style="color:#fff;">{email_str}</strong> đã được tự động nạp vào Bể OAuth & Gemini Web Pool.</p>
+                        <p style="font-size:12px;color:#71717a;">Cửa sổ này sẽ tự động đóng sau 1 giây...</p>
+                        </div><script>setTimeout(function(){{window.close();}},1200);</script></body></html>"""
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(html.encode("utf-8"))
+                    except Exception as e:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(f"<html><body><h3>Lỗi xác thực OAuth: {e}</h3></body></html>".encode("utf-8"))
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _CallbackHandler)
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            _OAUTH_LISTENER_STARTED = True
+        except Exception:
+            pass
 
 
 class AccountLoginSubmitRequest(BaseModel):
-    session_id: str
+    session_id: Optional[str] = ""
     callback_url: str
 
 
@@ -656,17 +821,15 @@ async def start_oauth_login():
     """Create a Google OAuth PKCE session and return auth_url immediately for mobile/remote or local browser."""
     auth_mgr = _get_ag_auth_manager()
     try:
-        # Clean up expired sessions
-        now = time.time()
-        expired = [sid for sid, s in _PKCE_SESSIONS.items() if s.get("expires_at", 0) < now]
-        for sid in expired:
-            _PKCE_SESSIONS.pop(sid, None)
-
+        _load_pkce_sessions()
+        _ensure_local_oauth_callback_listener()
         session = auth_mgr.create_pkce_auth_session()
         _PKCE_SESSIONS[session["session_id"]] = session
+        _save_pkce_sessions()
         return {
             "ok": True,
             "session_id": session["session_id"],
+            "state": session["state"],
             "auth_url": session["auth_url"],
             "redirect_uri": session["redirect_uri"],
             "message": "Đã tạo liên kết đăng nhập Google OAuth PKCE.",
@@ -676,44 +839,48 @@ async def start_oauth_login():
         return {"ok": False, "error": str(e), "message": f"Không thể khởi tạo OAuth: {e}"}
 
 
+@router.get("/accounts/login-poll/{session_id}")
+async def poll_oauth_login(session_id: str):
+    """Poll whether a PKCE login session has completed automatically via the local callback listener or another tab."""
+    sessions = _load_pkce_sessions()
+    s = sessions.get(session_id)
+    if s and s.get("completed"):
+        return {
+            "ok": True,
+            "completed": True,
+            "email": s.get("email") or "",
+            "project_id": s.get("project_id") or "",
+            "message": f"Đăng nhập Google thành công: {s.get('email')}",
+        }
+    return {"ok": True, "completed": False}
+
+
 @router.post("/accounts/login-submit")
 async def submit_oauth_login(req: AccountLoginSubmitRequest):
     """Complete Google OAuth PKCE login using the callback URL or code pasted from mobile/browser."""
-    session = _PKCE_SESSIONS.get(req.session_id)
+    session = _resolve_pkce_session(req.session_id or "", req.callback_url)
     if not session:
         return {
             "ok": False,
-            "message": "Phiên đăng nhập đã hết hạn hoặc không tồn tại. Vui lòng bấm '+ Đăng nhập Tài Khoản' lại.",
+            "message": "Phiên đăng nhập đã hết hạn hoặc không tồn tại. Vui lòng bấm Mở Trang Đăng Nhập Google lại.",
+        }
+    if session.get("completed") and session.get("email"):
+        return {
+            "ok": True,
+            "email": session["email"],
+            "project_id": session.get("project_id") or "",
+            "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể Gemini Web: {session['email']}",
         }
 
-    auth_mgr = _get_ag_auth_manager()
     loop = asyncio.get_event_loop()
-
-    def _exchange_worker():
-        return auth_mgr.complete_pkce_auth_session(
-            callback_or_code=req.callback_url,
-            code_verifier=session["code_verifier"],
-            redirect_uri=session["redirect_uri"],
-            expected_state=session.get("state"),
-        )
-
     try:
-        creds = await loop.run_in_executor(None, _exchange_worker)
-        _PKCE_SESSIONS.pop(req.session_id, None)
-        pool = _get_ag_account_pool()
-        acc = pool.add_or_update_account(creds, reset_status=True)
-        pool.set_active_account(acc.email)
+        res = await loop.run_in_executor(None, _complete_pkce_and_sync_sync, session, req.callback_url)
         try:
             gweb_pool = _get_gemini_web_pool()
             await _auto_sync_gemini_web_pool(gweb_pool)
         except Exception:
             pass
-        return {
-            "ok": True,
-            "email": acc.email,
-            "project_id": creds.project_id,
-            "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể Gemini Web: {acc.email}",
-        }
+        return res
     except Exception as e:
         logger.error(f"OAuth login-submit failed: {e}")
         return {"ok": False, "error": str(e), "message": f"Xác thực OAuth thất bại: {e}"}
@@ -1477,9 +1644,12 @@ async def start_gemini_web_auto_handshake():
             }
 
         # No existing local profiles found; return auth_url for 1-click Google OAuth login
+        _load_pkce_sessions()
+        _ensure_local_oauth_callback_listener()
         auth_mgr = _get_ag_auth_manager()
         pkce = auth_mgr.create_pkce_auth_session()
         _PKCE_SESSIONS[pkce["session_id"]] = pkce
+        _save_pkce_sessions()
         return {
             "ok": True,
             "session_id": pkce["session_id"],

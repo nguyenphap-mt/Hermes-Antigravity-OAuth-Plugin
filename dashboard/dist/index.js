@@ -493,12 +493,14 @@
       setWebOauth({ loading: true, session_id: "", auth_url: "", callback_url: "" });
       apiFetch("/accounts/login-start", { method: "POST" }).then(function (res) {
         if (res && res.ok && res.auth_url) {
-          setWebOauth({
+          var nextState = {
             loading: false,
             session_id: res.session_id,
             auth_url: res.auth_url,
             callback_url: "",
-          });
+          };
+          setWebOauth(nextState);
+          try { sessionStorage.setItem("ag_pending_gweb_oauth", JSON.stringify(nextState)); } catch (e) {}
         } else {
           setWebOauth({ loading: false, session_id: "", auth_url: "", callback_url: "" });
         }
@@ -507,47 +509,24 @@
       });
     }
 
-    function handleAutoCaptureHandshake() {
-      setLoading(true);
-      apiFetch("/gemini-web/handshake/start", { method: "POST" }).then(function (res) {
-        if (res && res.ok && res.imported_count > 0) {
-          notify(res.message || ("Đã tự động bắt " + res.imported_count + " Node Gemini Web!"), "success");
-          if (res.pool) setPool(res.pool);
-          else fetchWebPool();
-          setShowImportModal(false);
-        } else if (res && res.auth_url) {
-          setWebOauth({
-            loading: false,
-            session_id: res.session_id || "",
-            auth_url: res.auth_url,
-            callback_url: "",
-          });
-          notify("Hãy nhấn '1. Mở Trang Đăng Nhập Google' bên dưới để xác thực tài khoản mới!", "info");
-        } else {
-          notify((res && (res.message || res.error)) || "Chưa tìm thấy phiên có sẵn.", "warning");
-        }
-      }).catch(function (e) {
-        notify("Lỗi bắt tự động: " + e.message, "error");
-      }).finally(function () {
-        setLoading(false);
-      });
-    }
-
-    function handleWebOAuthSubmit() {
-      if (!webOauth.session_id || !webOauth.callback_url || !webOauth.callback_url.trim()) {
-        notify("Vui lòng dán đường link kết quả (http://127.0.0.1:51121/oauth-callback?code=...) vào ô Bước 2.", "warning");
+    function submitWebOAuthDirect(rawCallbackUrl, explicitSessionId) {
+      var trimmed = (rawCallbackUrl || "").trim();
+      if (!trimmed) {
+        notify("Vui lòng dán đường link kết quả (http://localhost:51121/oauth-callback?code=...) vào ô Bước 2.", "warning");
         return;
       }
+      var sid = explicitSessionId != null ? explicitSessionId : (webOauth.session_id || "");
       setLoading(true);
       apiFetch("/accounts/login-submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: webOauth.session_id,
-          callback_url: webOauth.callback_url.trim(),
+          session_id: sid,
+          callback_url: trimmed,
         }),
       }).then(function (res) {
         if (res && res.ok) {
+          try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
           notify(res.message || ("Đã tự động thêm & đồng bộ Node Web: " + (res.email || "")), "success");
           setShowImportModal(false);
           fetchWebPool();
@@ -556,6 +535,84 @@
         }
       }).catch(function (e) {
         notify("Lỗi xác thực OAuth: " + e.message, "error");
+      }).finally(function () {
+        setLoading(false);
+      });
+    }
+
+    function handleWebOAuthSubmit() {
+      submitWebOAuthDirect(webOauth.callback_url, webOauth.session_id);
+    }
+
+    // Restore pending mobile OAuth modal if page reloaded when returning from Google login
+    useEffect(function () {
+      try {
+        var saved = sessionStorage.getItem("ag_pending_gweb_oauth");
+        if (saved) {
+          var parsed = JSON.parse(saved);
+          if (parsed && parsed.session_id && parsed.auth_url) {
+            setWebOauth(parsed);
+            setShowImportModal(true);
+          }
+        }
+      } catch (e) {}
+    }, []);
+
+    // Poll /accounts/login-poll/{session_id} and check clipboard on return from mobile popup
+    useEffect(function () {
+      if (!showImportModal || !webOauth.session_id) return;
+      var timer = setInterval(function () {
+        apiFetch("/accounts/login-poll/" + encodeURIComponent(webOauth.session_id)).then(function (res) {
+          if (res && res.completed) {
+            try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
+            notify(res.message || ("Đăng nhập Google thành công: " + (res.email || "")), "success");
+            setShowImportModal(false);
+            fetchWebPool();
+          }
+        }).catch(function () {});
+      }, 2000);
+
+      function tryAutoClipboard() {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(function (txt) {
+            if (txt && txt.indexOf("code=") !== -1 && (txt.indexOf("localhost:51121") !== -1 || txt.indexOf("127.0.0.1:51121") !== -1 || txt.indexOf("oauth-callback") !== -1)) {
+              setWebOauth(function (prev) { return Object.assign({}, prev, { callback_url: txt.trim() }); });
+              submitWebOAuthDirect(txt.trim(), webOauth.session_id);
+            }
+          }).catch(function () {});
+        }
+      }
+      window.addEventListener("focus", tryAutoClipboard);
+      return function () {
+        clearInterval(timer);
+        window.removeEventListener("focus", tryAutoClipboard);
+      };
+    }, [showImportModal, webOauth.session_id]);
+
+    function handleAutoCaptureHandshake() {
+      setLoading(true);
+      apiFetch("/gemini-web/handshake/start", { method: "POST" }).then(function (res) {
+        if (res && res.ok && res.imported_count > 0) {
+          try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
+          notify(res.message || ("Đã tự động bắt " + res.imported_count + " Node Gemini Web!"), "success");
+          if (res.pool) setPool(res.pool);
+          else fetchWebPool();
+          setShowImportModal(false);
+        } else if (res && res.auth_url) {
+          var nextState = {
+            loading: false,
+            session_id: res.session_id || "",
+            auth_url: res.auth_url,
+            callback_url: "",
+          };
+          setWebOauth(nextState);
+          try { sessionStorage.setItem("ag_pending_gweb_oauth", JSON.stringify(nextState)); } catch (e) {}
+          notify("Hãy nhấn '1. Mở Trang Đăng Nhập Google' bên dưới để xác thực tài khoản mới!", "info");
+        } else {
+          notify((res && (res.message || res.error)) || "Chưa tìm thấy phiên có sẵn.", "warning");
+        }
+      }).catch(function (e) {
+        notify("Lỗi bắt tự động: " + e.message, "error");
       }).finally(function () {
         setLoading(false);
       });
@@ -954,7 +1011,10 @@
               ]),
             ]),
             h("button", {
-              onClick: function () { setShowImportModal(false); },
+              onClick: function () {
+                try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
+                setShowImportModal(false);
+              },
               className: "ag-btn ag-btn-secondary ag-btn-sm",
             }, "Đóng"),
           ]),
@@ -985,9 +1045,20 @@
             h("div", { className: "text-xs font-bold text-cyan-400" },
               "Cách 2: Đăng Nhập Tài Khoản Google Mới (Trực Tiếp Trên Điện Thoại / Web)"
             ),
-            h("p", { className: "text-xs text-zinc-400 leading-relaxed" },
-              "Bước 1: Mở trang đăng nhập Google, chọn tài khoản Gmail muốn thêm. Bước 2: Copy thanh địa chỉ kết quả (http://127.0.0.1:51121/oauth-callback?code=...) dán vào ô dưới để hệ thống tự động lấy Email, Gói Pro/Ultra và gắn thẳng vào bể Gemini Web:"
-            ),
+            h("div", {
+              className: "p-2.5 rounded-lg text-xs space-y-1",
+              style: { background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.3)" },
+            }, [
+              h("div", { className: "font-bold text-emerald-400" },
+                "📱 Lưu ý quan trọng khi đăng nhập trên Điện Thoại:"
+              ),
+              h("div", { className: "text-zinc-300 leading-relaxed" },
+                "Khi chọn tài khoản Gmail xong, màn hình điện thoại hiện «Không thể truy cập trang web này — localhost:51121 đã từ chối kết nối» nghĩa là Google ĐÃ CẤP MÃ THÀNH CÔNG!"
+              ),
+              h("div", { className: "text-amber-300 font-semibold leading-relaxed" },
+                "👉 Tại màn hình localhost:51121 đó: Bấm nút [ ⋮ ] (3 chấm góc trên bên phải) → Chọn «Sao chép đường liên kết» (Copy link) → Bấm [ X ] quay lại đây và Dán vào ô dưới (Hệ thống TỰ ĐỘNG KẾT NỐI NGAY khi vừa dán!):"
+              ),
+            ]),
             h("div", { className: "flex flex-wrap items-center gap-2" }, [
               webOauth.auth_url
                 ? h("a", {
@@ -1016,10 +1087,14 @@
               h("input", {
                 type: "text",
                 className: "ag-input flex-1 font-mono text-xs",
-                placeholder: "Bước 2: Dán link http://127.0.0.1:51121/oauth-callback?code=... vào đây",
+                placeholder: "Chạm giữ để Dán (Paste) link localhost:51121 vào đây → Tự động kết nối ngay!",
                 value: webOauth.callback_url,
                 onChange: function (e) {
-                  setWebOauth(Object.assign({}, webOauth, { callback_url: e.target.value }));
+                  var val = e.target.value || "";
+                  setWebOauth(Object.assign({}, webOauth, { callback_url: val }));
+                  if (val.indexOf("code=") !== -1 && !loading) {
+                    submitWebOAuthDirect(val, webOauth.session_id);
+                  }
                 },
               }),
               h("button", {
@@ -1393,12 +1468,14 @@
       apiFetch("/accounts/login-start", { method: "POST" })
         .then(function (res) {
           if (res.ok && res.auth_url) {
-            setOauthModal({
+            var nextModal = {
               loading: false,
               session_id: res.session_id,
               auth_url: res.auth_url,
               redirect_uri: res.redirect_uri,
-            });
+            };
+            setOauthModal(nextModal);
+            try { sessionStorage.setItem("ag_pending_oauth", JSON.stringify(nextModal)); } catch (e) {}
           } else {
             setOauthMsg({ type: "error", text: res.message || "Không thể khởi tạo phiên OAuth." });
             setOauthModal({ loading: false, session_id: "", auth_url: "" });
@@ -1410,24 +1487,26 @@
         });
     }
 
-    function handleSubmitOAuth() {
-      if (!oauthModal || !oauthModal.session_id) return;
-      if (!callbackInput || !callbackInput.trim()) {
-        setOauthMsg({ type: "error", text: "Vui lòng dán đường link http://127.0.0.1:51121/... hoặc mã code vào ô bên dưới." });
+    function submitOAuthDirect(rawCallbackUrl, explicitSessionId) {
+      var trimmed = (rawCallbackUrl || "").trim();
+      if (!trimmed) {
+        setOauthMsg({ type: "error", text: "Vui lòng dán đường link http://localhost:51121/... hoặc mã code vào ô bên dưới." });
         return;
       }
+      var sid = explicitSessionId != null ? explicitSessionId : (oauthModal ? oauthModal.session_id : "");
       setSubmittingOAuth(true);
       setOauthMsg(null);
       apiFetch("/accounts/login-submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: oauthModal.session_id,
-          callback_url: callbackInput.trim(),
+          session_id: sid,
+          callback_url: trimmed,
         }),
       })
         .then(function (res) {
           if (res.ok) {
+            try { sessionStorage.removeItem("ag_pending_oauth"); } catch (e) {}
             notify(res.message || ("Đăng nhập thành công: " + res.email), "success");
             setOauthModal(null);
             setCallbackInput("");
@@ -1444,6 +1523,56 @@
           setSubmittingOAuth(false);
         });
     }
+
+    function handleSubmitOAuth() {
+      submitOAuthDirect(callbackInput, oauthModal ? oauthModal.session_id : "");
+    }
+
+    // Restore pending OAuth modal if mobile browser reloaded page when returning from Google login
+    useEffect(function () {
+      try {
+        var saved = sessionStorage.getItem("ag_pending_oauth");
+        if (saved) {
+          var parsed = JSON.parse(saved);
+          if (parsed && parsed.session_id && parsed.auth_url) {
+            setOauthModal(parsed);
+          }
+        }
+      } catch (e) {}
+    }, []);
+
+    // Poll /accounts/login-poll/{session_id} and check clipboard on return from mobile popup
+    useEffect(function () {
+      if (!oauthModal || !oauthModal.session_id) return;
+      var timer = setInterval(function () {
+        apiFetch("/accounts/login-poll/" + encodeURIComponent(oauthModal.session_id)).then(function (res) {
+          if (res && res.completed) {
+            try { sessionStorage.removeItem("ag_pending_oauth"); } catch (e) {}
+            notify(res.message || ("Đăng nhập Google thành công: " + (res.email || "")), "success");
+            setOauthModal(null);
+            setCallbackInput("");
+            loadAccounts();
+            loadModelsAndQuota();
+          }
+        }).catch(function () {});
+      }, 2000);
+
+      function tryAutoClipboard() {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(function (txt) {
+            if (txt && txt.indexOf("code=") !== -1 && (txt.indexOf("localhost:51121") !== -1 || txt.indexOf("127.0.0.1:51121") !== -1 || txt.indexOf("oauth-callback") !== -1)) {
+              setCallbackInput(txt.trim());
+              submitOAuthDirect(txt.trim(), oauthModal.session_id);
+            }
+          }).catch(function () {});
+        }
+      }
+      window.addEventListener("focus", tryAutoClipboard);
+      return function () {
+        clearInterval(timer);
+        window.removeEventListener("focus", tryAutoClipboard);
+      };
+    }, [oauthModal, loadAccounts, loadModelsAndQuota]);
 
     // Filter models
     var filteredModels = models.filter(function (m) {
@@ -1486,7 +1615,10 @@
               ]),
             ]),
             h("button", {
-              onClick: function () { setOauthModal(null); },
+              onClick: function () {
+                try { sessionStorage.removeItem("ag_pending_oauth"); } catch (e) {}
+                setOauthModal(null);
+              },
               className: "ag-btn ag-btn-secondary ag-btn-sm",
             }, "Đóng"),
           ]),
@@ -1550,15 +1682,32 @@
 
                 // Step 2
                 h("div", { className: "ag-subcard space-y-2.5" }, [
-                  h("div", { className: "text-xs font-semibold text-cyan-400" }, "Bước 2: Dán đường link kết quả (Callback URL)"),
-                  h("p", { className: "text-xs text-zinc-400 leading-relaxed" },
-                    "Sau khi đăng nhập xong, trình duyệt sẽ chuyển đến trang http://127.0.0.1:51121/oauth-callback?code=... (trên điện thoại sẽ báo Không thể truy cập trang web — điều này hoàn toàn bình thường). Hãy copy toàn bộ đường link trên thanh địa chỉ đó và dán vào ô dưới đây:"
-                  ),
+                  h("div", { className: "text-xs font-semibold text-cyan-400" }, "Bước 2: Dán đường link kết quả (Tự động kết nối ngay khi vừa dán!)"),
+                  h("div", {
+                    className: "p-2.5 rounded-lg text-xs space-y-1",
+                    style: { background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.3)" },
+                  }, [
+                    h("div", { className: "font-bold text-emerald-400" },
+                      "📱 Đang dùng Điện Thoại và thấy trang «Không thể truy cập trang web này (localhost:51121)»?"
+                    ),
+                    h("div", { className: "text-zinc-300 leading-relaxed" },
+                      "Đó là dấu hiệu Google ĐÃ CẤP MÃ THÀNH CÔNG (mã code= đang nằm trong đường link localhost:51121 đó)!"
+                    ),
+                    h("div", { className: "text-amber-300 font-semibold leading-relaxed" },
+                      "👉 Cách lấy mã trong 2 giây: Tại màn hình localhost:51121, bấm nút [ ⋮ ] (3 chấm góc trên bên phải) → Chọn «Sao chép đường liên kết» (Copy link) → Bấm [ X ] quay lại đây và Dán vào ô dưới:"
+                    ),
+                  ]),
                   h("textarea", {
                     rows: 3,
                     value: callbackInput,
-                    onChange: function (e) { setCallbackInput(e.target.value); },
-                    placeholder: "Dán toàn bộ link http://127.0.0.1:51121/oauth-callback?state=...&code=... vào đây",
+                    onChange: function (e) {
+                      var val = e.target.value || "";
+                      setCallbackInput(val);
+                      if (val.indexOf("code=") !== -1 && !submittingOAuth) {
+                        submitOAuthDirect(val, oauthModal ? oauthModal.session_id : "");
+                      }
+                    },
+                    placeholder: "Chạm giữ để Dán (Paste) link http://localhost:51121/oauth-callback?state=...&code=... vào đây → Tự động kết nối ngay!",
                     className: "ag-textarea w-full font-mono",
                   }),
                 ]),
@@ -1575,7 +1724,10 @@
                   className: "flex flex-wrap items-center justify-end gap-2.5 pt-2",
                 }, [
                   h("button", {
-                    onClick: function () { setOauthModal(null); },
+                    onClick: function () {
+                      try { sessionStorage.removeItem("ag_pending_oauth"); } catch (e) {}
+                      setOauthModal(null);
+                    },
                     className: "ag-btn ag-btn-secondary",
                   }, "Hủy"),
                   h("button", {
