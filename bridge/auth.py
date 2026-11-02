@@ -891,19 +891,40 @@ class AntigravityAuthManager:
             }
 
         try:
-            load_body = json.dumps({"metadata": metadata}).encode("utf-8")
-            req = urllib.request.Request(
-                LOAD_CODE_ASSIST_ENDPOINT,
-                data=load_body,
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=12.0) as resp:
-                raw_bytes = resp.read()
-                if resp.headers.get("Content-Encoding") == "gzip" or raw_bytes[:2] == b"\x1f\x8b":
-                    import gzip
-                    raw_bytes = gzip.decompress(raw_bytes)
-                data = json.loads(raw_bytes.decode("utf-8"))
+            existing_pid = creds.effective_project_id
+            candidate_payloads = []
+            if existing_pid and existing_pid != DEFAULT_PROJECT_ID:
+                candidate_payloads.append({"cloudaicompanionProject": existing_pid, "metadata": metadata})
+                candidate_payloads.append({"metadata": metadata})
+            else:
+                candidate_payloads.append({"metadata": metadata})
+                if existing_pid:
+                    candidate_payloads.append({"cloudaicompanionProject": existing_pid, "metadata": metadata})
+
+            data: Dict[str, Any] = {}
+            last_probe_err: Optional[Exception] = None
+            for payload_dict in candidate_payloads:
+                load_body = json.dumps(payload_dict).encode("utf-8")
+                try:
+                    req = urllib.request.Request(
+                        LOAD_CODE_ASSIST_ENDPOINT,
+                        data=load_body,
+                        headers=headers,
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=12.0) as resp:
+                        raw_bytes = resp.read()
+                        if resp.headers.get("Content-Encoding") == "gzip" or raw_bytes[:2] == b"\x1f\x8b":
+                            import gzip
+                            raw_bytes = gzip.decompress(raw_bytes)
+                        data = json.loads(raw_bytes.decode("utf-8"))
+                    if data:
+                        break
+                except Exception as p_err:
+                    last_probe_err = p_err
+                    continue
+            if not data and last_probe_err is not None:
+                raise last_probe_err
 
             paid_tier = data.get("paidTier")
             current_tier = data.get("currentTier")
@@ -919,6 +940,18 @@ class AntigravityAuthManager:
             if not tier_id:
                 tier_id = str(data.get("tierId") or "")
             pid = self._extract_companion_project_id(data) or creds.effective_project_id or DEFAULT_PROJECT_ID
+
+            p_low = plan_name.lower()
+            t_low = tier_id.lower()
+            if "ultra" in p_low or "ultra" in t_low:
+                creds.plan_type = "ultra"
+                plan_name = plan_name or "Google AI Ultra"
+            elif "pro" in p_low or "pro" in t_low:
+                creds.plan_type = "pro"
+                plan_name = plan_name or "Google AI Pro"
+            else:
+                creds.plan_type = "free"
+                plan_name = "Free Tier" if ("free" in t_low or "antigravity" in p_low) else (plan_name or "Free Tier")
 
             creds.project_id = pid
             creds.managed_project_id = pid

@@ -476,3 +476,99 @@ def test_resolve_pkce_session_matches_state_when_session_id_lost_on_mobile(monke
     assert matched["code_verifier"] == "ver_111"
 
 
+def test_refresh_account_plan_passes_companion_project_and_upgrades_gemini_web_node(monkeypatch, tmp_path):
+    import urllib.error
+    import urllib.request
+    from bridge.account_pool import AntigravityAccountPoolManager
+
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    tokens_path = auth_dir / "antigravity_tokens.json"
+    tokens_path.write_text(
+        json.dumps(
+            {
+                "active_account_email": "nguyenphap.pub@gmail.com",
+                "accounts": {
+                    "nguyenphap.pub@gmail.com": {
+                        "email": "nguyenphap.pub@gmail.com",
+                        "access_token": "ya29.valid_token_nguyenphap",
+                        "refresh_token": "1//refresh_nguyenphap",
+                        "expires_at": time.time() + 3600,
+                        "project_id": "mimetic-ship-3261n",
+                        "managed_project_id": "mimetic-ship-3261n",
+                        "tier_id": "",
+                        "plan_name": "Free Tier",
+                        "plan_type": "free",
+                        "status": "active",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pool_file = tmp_path / "gemini_web_pool.json"
+    pool_file.write_text(
+        json.dumps(
+            {
+                "config": {},
+                "nodes": [
+                    {
+                        "node_id": "nguyenphap_pub_gmail_com",
+                        "email": "nguyenphap.pub@gmail.com",
+                        "display_name": "nguyenphap.pub (Free)",
+                        "linked_oauth_account_id": "nguyenphap.pub@gmail.com",
+                        "enabled": True,
+                        "status": "ready",
+                        "detected_tier": "free",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakeResp:
+        headers = {}
+
+        def __init__(self, payload: dict):
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def _fake_urlopen(req, timeout=10.0):
+        url = req.full_url
+        body = json.loads((req.data or b"{}").decode("utf-8"))
+        if ":loadCodeAssist" in url:
+            if body.get("cloudaicompanionProject") != "mimetic-ship-3261n":
+                raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+            return _FakeResp(
+                {
+                    "currentTier": {"id": "free-tier", "name": "Antigravity"},
+                    "paidTier": {"id": "g1-pro-tier", "name": "Google AI Pro"},
+                }
+            )
+        return _FakeResp({"groups": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    oauth_pool = AntigravityAccountPoolManager(storage_path=tokens_path)
+    res = oauth_pool.refresh_account_plan_and_quota("nguyenphap.pub@gmail.com")
+    assert res["ok"] is True
+    assert res["plan_name"] == "Google AI Pro"
+    assert res["plan_type"] == "pro"
+
+    web_pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+    nodes = web_pool.list_nodes()
+    assert len(nodes) == 1
+    assert nodes[0].detected_tier == "pro"
+    assert nodes[0].display_name == "nguyenphap.pub (Google AI Pro)"
+
+

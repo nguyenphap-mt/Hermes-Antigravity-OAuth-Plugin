@@ -709,6 +709,130 @@ class GeminiWebSessionManager:
                 except Exception:
                     pass
 
+        # 2b. Check official Google Gemini Desktop App (%APPDATA%/Gemini) cookies & Mendel flag cache
+        if include_system_profiles:
+            gemini_desktop_dirs: List[Path] = []
+            appdata_env = os.environ.get("APPDATA")
+            if appdata_env:
+                gemini_desktop_dirs.append(Path(appdata_env) / "Gemini")
+            gemini_desktop_dirs.extend([
+                Path.home() / "AppData" / "Roaming" / "Gemini",
+                Path.home() / "Library" / "Application Support" / "Gemini",
+                Path.home() / ".config" / "Gemini",
+            ])
+            seen_gdirs = set()
+            for gdir in gemini_desktop_dirs:
+                try:
+                    gdir_res = gdir.resolve()
+                except Exception:
+                    continue
+                if gdir_res in seen_gdirs or not gdir_res.is_dir():
+                    continue
+                seen_gdirs.add(gdir_res)
+
+                # Inspect Mendel flag_cache (flags/active_account.json + flags/<gaiaId>.json)
+                desktop_tier = "free"
+                active_gaia_id = ""
+                try:
+                    act_file = gdir_res / "flags" / "active_account.json"
+                    if act_file.is_file():
+                        act_data = json.loads(act_file.read_text(encoding="utf-8"))
+                        active_gaia_id = str(act_data.get("activeAccountId") or "").strip()
+                    if active_gaia_id and active_gaia_id != "default":
+                        flag_file = gdir_res / "flags" / f"{active_gaia_id}.json"
+                        if flag_file.is_file():
+                            flag_data = json.loads(flag_file.read_text(encoding="utf-8"))
+                            flags_map = flag_data.get("flags") if isinstance(flag_data, dict) else {}
+                            if isinstance(flags_map, dict):
+                                f_banner = str(flags_map.get("45742219") or "").lower()
+                                if "ultra" in f_banner:
+                                    desktop_tier = "ultra"
+                                elif "pro is now on" in f_banner or "gemini 3 pro" in f_banner:
+                                    desktop_tier = "pro"
+                except Exception:
+                    pass
+
+                # Attempt to read Network/Cookies (unencrypted or Windows DPAPI + AES-256-GCM when not locked)
+                cookie_db = gdir_res / "Network" / "Cookies"
+                local_state = gdir_res / "Local State"
+                if cookie_db.is_file():
+                    try:
+                        master_key: Optional[bytes] = None
+                        if os.name == "nt" and local_state.is_file():
+                            import base64
+                            import ctypes
+                            import ctypes.wintypes
+
+                            ls_json = json.loads(local_state.read_text(encoding="utf-8"))
+                            enc_key_b64 = ls_json.get("os_crypt", {}).get("encrypted_key")
+                            if enc_key_b64:
+                                enc_key = base64.b64decode(enc_key_b64)
+                                if enc_key.startswith(b"DPAPI"):
+                                    raw_dpapi = enc_key[5:]
+
+                                    class _DATA_BLOB(ctypes.Structure):
+                                        _fields_ = [
+                                            ("cbData", ctypes.wintypes.DWORD),
+                                            ("pbData", ctypes.POINTER(ctypes.c_char)),
+                                        ]
+
+                                    blob_in = _DATA_BLOB(
+                                        len(raw_dpapi),
+                                        ctypes.create_string_buffer(raw_dpapi, len(raw_dpapi)),
+                                    )
+                                    blob_out = _DATA_BLOB()
+                                    if ctypes.windll.crypt32.CryptUnprotectData(
+                                        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+                                    ):
+                                        master_key = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+                                        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+                        conn = sqlite3.connect(f"file:{cookie_db}?mode=ro", uri=True)
+                        cur = conn.cursor()
+                        cur.execute(
+                            "SELECT name, value, encrypted_value, host_key FROM cookies WHERE host_key LIKE '%google.com%'"
+                        )
+                        rows = cur.fetchall()
+                        conn.close()
+                        ck_map: Dict[str, str] = {}
+                        aesgcm = None
+                        if master_key:
+                            try:
+                                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                                aesgcm = AESGCM(master_key)
+                            except Exception:
+                                aesgcm = None
+
+                        for r_name, r_val, r_enc, r_host in rows:
+                            if not r_name:
+                                continue
+                            dec_val = str(r_val or "")
+                            if not dec_val and r_enc and aesgcm and bytes(r_enc)[:3] in (b"v10", b"v11", b"v20"):
+                                try:
+                                    raw_enc = bytes(r_enc)
+                                    pt = aesgcm.decrypt(raw_enc[3:15], raw_enc[15:], None)
+                                    dec_val = (pt[32:] if len(pt) > 32 else pt).decode("utf-8", errors="ignore")
+                                except Exception:
+                                    dec_val = ""
+                            if not dec_val:
+                                continue
+                            host_l = str(r_host or "").lower()
+                            if host_l in (".google.com", "google.com", "gemini.google.com") or str(r_name) not in ck_map:
+                                ck_map[str(r_name)] = dec_val
+
+                        if ck_map.get("__Secure-1PSID"):
+                            dedup_key = f"gemini_desktop:{active_gaia_id or ck_map['__Secure-1PSID'][:20]}"
+                            if dedup_key not in discovered_by_key:
+                                discovered_by_key[dedup_key] = {
+                                    "source": "gemini_desktop_app",
+                                    "email": "",
+                                    "display_name": f"Gemini Desktop ({desktop_tier.upper()})",
+                                    "detected_tier": desktop_tier if desktop_tier != "free" else "pro",
+                                    "cookies": ck_map,
+                                }
+                    except Exception:
+                        pass
+
         # 3. Check authenticated Google OAuth Pool accounts (antigravity_tokens.json)
         for rel in ("auth/antigravity_tokens.json", "antigravity_tokens.json"):
             tf = self.hermes_dir / rel
@@ -752,4 +876,5 @@ class GeminiWebSessionManager:
                 pass
 
         return list(discovered_by_key.values())
+
 

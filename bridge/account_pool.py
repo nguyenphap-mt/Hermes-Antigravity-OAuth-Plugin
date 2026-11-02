@@ -1120,30 +1120,53 @@ class AntigravityAccountPoolManager:
         plan_type = acc.computed_plan_type
         pid = acc.effective_project_id
 
-        # 1. Query loadCodeAssist
+        # 1. Query loadCodeAssist (include cloudaicompanionProject when a custom project_id is known, with fallback)
+        detected_tier_id = acc.tier_id or ""
         try:
-            load_body = json.dumps({"metadata": metadata}).encode("utf-8")
+            candidate_payloads = []
+            if pid and pid != "aicode-consumers":
+                candidate_payloads.append({"cloudaicompanionProject": pid, "metadata": metadata})
+                candidate_payloads.append({"metadata": metadata})
+            else:
+                candidate_payloads.append({"metadata": metadata})
+                if pid:
+                    candidate_payloads.append({"cloudaicompanionProject": pid, "metadata": metadata})
+
             data: Dict[str, Any] = {}
-            for ep in (LOAD_CODE_ASSIST_ENDPOINT, FALLBACK_LOAD_CODE_ASSIST_ENDPOINT):
+            last_load_err: Optional[Exception] = None
+            for payload_dict in candidate_payloads:
+                load_body = json.dumps(payload_dict).encode("utf-8")
                 try:
-                    req = urllib.request.Request(ep, data=load_body, headers=headers, method="POST")
-                    with urllib.request.urlopen(req, timeout=10.0) as resp:
-                        raw = resp.read()
-                        if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
-                            raw = gzip.decompress(raw)
-                        data = json.loads(raw.decode("utf-8"))
-                    break
-                except urllib.error.HTTPError as he:
-                    if he.code in {404, 500, 502, 503, 504} and ep == LOAD_CODE_ASSIST_ENDPOINT:
-                        continue
-                    raise
+                    for ep in (LOAD_CODE_ASSIST_ENDPOINT, FALLBACK_LOAD_CODE_ASSIST_ENDPOINT):
+                        try:
+                            req = urllib.request.Request(ep, data=load_body, headers=headers, method="POST")
+                            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                                raw = resp.read()
+                                if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                                    raw = gzip.decompress(raw)
+                                data = json.loads(raw.decode("utf-8"))
+                            break
+                        except urllib.error.HTTPError as he:
+                            if he.code in {404, 500, 502, 503, 504} and ep == LOAD_CODE_ASSIST_ENDPOINT:
+                                continue
+                            raise
+                    if data:
+                        break
+                except Exception as loop_err:
+                    last_load_err = loop_err
+                    continue
+            if not data and last_load_err is not None:
+                raise last_load_err
 
             if data:
                 paid_tier = data.get("paidTier")
                 current_tier = data.get("currentTier")
                 if isinstance(paid_tier, dict) and paid_tier.get("name"):
                     p_name = str(paid_tier.get("name") or "")
-                    p_id = str(paid_tier.get("id") or "").lower()
+                    p_id_raw = str(paid_tier.get("id") or "")
+                    p_id = p_id_raw.lower()
+                    if p_id_raw:
+                        detected_tier_id = p_id_raw
                     if "ultra" in p_name.lower() or "ultra" in p_id:
                         plan_type = "ultra"
                         plan_name = p_name or "Google AI Ultra"
@@ -1158,7 +1181,10 @@ class AntigravityAccountPoolManager:
                         plan_name = p_name or "Free Tier"
                 elif isinstance(current_tier, dict):
                     c_name = str(current_tier.get("name") or "")
-                    c_id = str(current_tier.get("id") or "").lower()
+                    c_id_raw = str(current_tier.get("id") or "")
+                    c_id = c_id_raw.lower()
+                    if c_id_raw and not detected_tier_id:
+                        detected_tier_id = c_id_raw
                     if "ultra" in c_name.lower() or "ultra" in c_id:
                         plan_type = "ultra"
                         plan_name = c_name or "Google AI Ultra"
@@ -1235,6 +1261,8 @@ class AntigravityAccountPoolManager:
             if isinstance(raw_accs, dict) and target in raw_accs:
                 raw_accs[target]["plan_name"] = plan_name
                 raw_accs[target]["plan_type"] = plan_type
+                if detected_tier_id:
+                    raw_accs[target]["tier_id"] = detected_tier_id
                 raw_accs[target]["quota_summary"] = quota_summary
                 if pid and pid != "aicode-consumers":
                     raw_accs[target]["managed_project_id"] = pid
@@ -1244,6 +1272,8 @@ class AntigravityAccountPoolManager:
                 if data.get("active_account_email") == target:
                     data["plan_name"] = plan_name
                     data["plan_type"] = plan_type
+                    if detected_tier_id:
+                        data["tier_id"] = detected_tier_id
                     data["quota_summary"] = quota_summary
 
                 self._save_raw(data)

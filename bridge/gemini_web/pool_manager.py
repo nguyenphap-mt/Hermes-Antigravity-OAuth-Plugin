@@ -225,6 +225,17 @@ class GeminiWebPoolManager:
                         if n.quota_limits.get("argon_hourly_limit") == old_defaults.get("argon_hourly_limit"):
                             n.quota_limits = dict(TIER_DEFAULT_LIMITS.get(l_tier, TIER_DEFAULT_LIMITS["pro"]))
                         dirty = True
+                    tier_label = (
+                        "Google AI Ultra"
+                        if n.detected_tier == "ultra"
+                        else ("Google AI Pro" if n.detected_tier == "pro" else "Free")
+                    )
+                    if n.detected_tier in ("pro", "ultra") and n.display_name and "(Free)" in n.display_name:
+                        n.display_name = n.display_name.replace("(Free)", f"({tier_label})")
+                        dirty = True
+                    elif n.detected_tier == "ultra" and n.display_name and "(Google AI Pro)" in n.display_name:
+                        n.display_name = n.display_name.replace("(Google AI Pro)", f"({tier_label})")
+                        dirty = True
             if dirty:
                 try:
                     self._save_pool_raw(cfg, nodes)
