@@ -804,6 +804,131 @@ def run_audit() -> Dict[str, Any]:
                 "rcid_preserved": parsed_mf["rcid"],
             }
 
+            # =========================================================================
+            # STAGE 8: Real Live Google Upstream 3-Turn Hermes AIAgent Tool + Memory Audit
+            # =========================================================================
+            live_hermes_candidates = [
+                Path.home() / "AppData" / "Local" / "hermes",
+                Path.home() / ".hermes",
+                Path("/home/hermes/.hermes"),
+            ]
+            live_hermes_dir = None
+            for lcand in live_hermes_candidates:
+                if lcand.is_dir():
+                    test_p = GeminiWebPoolManager(hermes_dir=lcand)
+                    if test_p.get_dashboard_pool_snapshot().get("ready_nodes", 0) > 0:
+                        live_hermes_dir = lcand
+                        break
+
+            if live_hermes_dir is not None:
+                from bridge.auth import AntigravityAuthManager
+
+                live_pool = GeminiWebPoolManager(hermes_dir=live_hermes_dir)
+                live_auth = AntigravityAuthManager(
+                    auth_file=live_hermes_dir / "auth" / "antigravity_tokens.json"
+                )
+                live_ag_client = AntigravityClient(auth_manager=live_auth, gemini_web_pool=live_pool)
+                live_port = _find_free_port()
+                live_srv = AntigravityBridgeServer(
+                    host="127.0.0.1",
+                    port=live_port,
+                    auth_manager=live_auth,
+                )
+                live_srv.client = live_ag_client
+
+                live_loop = asyncio.new_event_loop()
+                live_ready = threading.Event()
+                live_stop = threading.Event()
+
+                def _run_live_bridge():
+                    asyncio.set_event_loop(live_loop)
+
+                    async def _serve_live():
+                        runner = web.AppRunner(live_srv.app)
+                        await runner.setup()
+                        site = web.TCPSite(runner, "127.0.0.1", live_port)
+                        await site.start()
+                        live_ready.set()
+                        while not live_stop.is_set():
+                            await asyncio.sleep(0.05)
+                        await runner.cleanup()
+
+                    live_loop.run_until_complete(_serve_live())
+
+                live_thread = threading.Thread(target=_run_live_bridge, daemon=True)
+                live_thread.start()
+                live_ready.wait(timeout=5.0)
+                live_base_url = f"http://127.0.0.1:{live_port}/v1"
+
+                try:
+                    live_secret_file = tmp_dir / "live_upstream_secret.txt"
+                    live_secret_val = "LIVE_HERMES_SECRET_2026_7788"
+                    live_secret_file.write_text(live_secret_val, encoding="utf-8")
+
+                    live_agent = AIAgent(
+                        base_url=live_base_url,
+                        api_key="ag-live-upstream-audit-key",
+                        provider="custom",
+                        api_mode="chat_completions",
+                        model="gemini-web-argon",
+                        max_iterations=8,
+                        enabled_toolsets=["file", "terminal"],
+                        quiet_mode=True,
+                        skip_context_files=True,
+                        skip_memory=True,
+                    )
+                    live_agent.model = "gemini-web-argon"
+
+                    # Live Turn 1: Execute real `read_file` tool + store project codename in conversation memory
+                    live_r1 = live_agent.run_conversation(
+                        user_message=(
+                            f"Hãy dùng tool read_file để đọc file {live_secret_file}. "
+                            "Đồng thời ghi nhớ mật danh dự án của tôi là BENTHANH_OMEGA_99. Trả lời ngắn gọn."
+                        )
+                    )
+                    live_resp1 = str(live_r1.get("final_response") or "")
+                    live_hist1 = list(live_r1.get("messages") or [])
+                    assert live_secret_val in live_resp1, f"Live Stage 8 Turn 1 failed: {live_resp1}"
+
+                    # Live Turn 2: Execute real `terminal` tool in the SAME conversation + store calculation
+                    live_r2 = live_agent.run_conversation(
+                        user_message=(
+                            f'Hãy dùng tool terminal chạy lệnh: "{sys.executable}" -c "print(19 * 23)" '
+                            "và báo kết quả số tính được. Trả lời ngắn gọn."
+                        ),
+                        conversation_history=live_hist1,
+                    )
+                    live_resp2 = str(live_r2.get("final_response") or "")
+                    live_hist2 = list(live_r2.get("messages") or [])
+                    assert "437" in live_resp2, f"Live Stage 8 Turn 2 failed: {live_resp2}"
+
+                    # Live Turn 3: Recall ALL facts from Turn 1 & Turn 2 without calling tools
+                    live_r3 = live_agent.run_conversation(
+                        user_message=(
+                            "Không cần gọi tool nữa, hãy liệt kê chính xác 3 thông tin từ các lượt trước: "
+                            "(1) chuỗi bí mật trong file ở lượt 1, "
+                            "(2) mật danh dự án ở lượt 1, "
+                            "(3) kết quả phép nhân 19 * 23 ở lượt 2."
+                        ),
+                        conversation_history=live_hist2,
+                    )
+                    live_resp3 = str(live_r3.get("final_response") or "")
+                    assert live_secret_val in live_resp3, f"Live Turn 3 forgot file secret: {live_resp3}"
+                    assert "BENTHANH_OMEGA_99" in live_resp3, f"Live Turn 3 forgot project codename: {live_resp3}"
+                    assert "437" in live_resp3, f"Live Turn 3 forgot terminal result: {live_resp3}"
+
+                    report["stages"]["stage8_live_upstream_hermes_3turn_tools_and_memory"] = {
+                        "passed": True,
+                        "live_hermes_dir": str(live_hermes_dir),
+                        "turn1_read_file_response": live_resp1,
+                        "turn2_terminal_response": live_resp2,
+                        "turn3_memory_recall_response": live_resp3,
+                    }
+                finally:
+                    live_stop.set()
+                    live_thread.join(timeout=2.0)
+                    asyncio.run(live_ag_client.close())
+
             report["all_passed"] = True
 
         finally:
