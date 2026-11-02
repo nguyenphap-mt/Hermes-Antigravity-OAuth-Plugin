@@ -23,7 +23,7 @@
   }
 
   var React = SDK.React;
-  var h = React.createElement;
+  var _rawCreateElement = React.createElement;
   var useState = SDK.hooks.useState;
   var useEffect = SDK.hooks.useEffect;
   var useCallback = SDK.hooks.useCallback;
@@ -31,6 +31,523 @@
   var useToast = SDK.hooks.useToast;
 
   var API_BASE = "/api/plugins/antigravity";
+
+  // ---------------------------------------------------------------------------
+  // Bilingual i18n Engine (Vietnamese "vi" <-> English "en")
+  // ---------------------------------------------------------------------------
+  var LANG_STORAGE_KEY = "ag_cockpit_lang";
+  var _langListeners = [];
+
+  function detectInitialLang() {
+    try {
+      var saved = localStorage.getItem(LANG_STORAGE_KEY);
+      if (saved === "en" || saved === "vi") return saved;
+    } catch (e) {}
+    return "vi";
+  }
+
+  var currentLang = detectInitialLang();
+
+  function setCockpitLang(nextLang) {
+    var normalized = nextLang === "en" ? "en" : "vi";
+    if (currentLang === normalized) return;
+    currentLang = normalized;
+    try {
+      localStorage.setItem(LANG_STORAGE_KEY, normalized);
+    } catch (e) {}
+    for (var i = 0; i < _langListeners.length; i++) {
+      try { _langListeners[i](normalized); } catch (e) {}
+    }
+  }
+
+  function useCockpitLang() {
+    var st = useState(currentLang);
+    var lang = st[0];
+    var setLangState = st[1];
+    useEffect(function () {
+      function listener(next) {
+        setLangState(next);
+      }
+      _langListeners.push(listener);
+      return function () {
+        var idx = _langListeners.indexOf(listener);
+        if (idx !== -1) _langListeners.splice(idx, 1);
+      };
+    }, []);
+    return lang;
+  }
+
+  var VI_TO_EN_EXACT = {
+    // Top Bar & Navigation
+    "Buồng lái quản trị Google Antigravity OAuth, 32+ Models, Sinh ảnh & Veo 3.1 Video": "Unified Cockpit for Google Antigravity OAuth, 32+ Models, Image Gen & Veo 3.1 Video",
+    "Khởi động lại Bridge Daemon": "Restart Bridge Daemon",
+    "Dừng Bridge Daemon": "Stop Bridge Daemon",
+    "Kích hoạt Daemon": "Start Daemon",
+    "Đã làm mới telemetry": "Telemetry refreshed",
+    "Làm mới dữ liệu": "Refresh telemetry",
+    "Chuyển đổi ngôn ngữ Tiếng Việt / Tiếng Anh": "Switch language: Vietnamese (VI) / English (EN)",
+    "Bridge Daemon đã dừng.": "Bridge Daemon stopped.",
+    "Bridge Daemon đã khởi động thành công.": "Bridge Daemon started successfully.",
+    "Khởi động daemon thất bại (timeout/error).": "Failed to start daemon (timeout/error).",
+    "Bridge Daemon đã khởi động lại thành công.": "Bridge Daemon restarted successfully.",
+    "Khởi động lại daemon thất bại.": "Failed to restart daemon.",
+    "OAuth & Models": "OAuth & Models",
+    "Gemini Web App": "Gemini Web App",
+    "Google Flow Video": "Google Flow Video",
+    "Image Gen Studio": "Image Gen Studio",
+    "Doctor & Logs": "Doctor & Logs",
+
+    // Common Actions & Badges
+    "Đóng": "Close",
+    "Hủy": "Cancel",
+    "Xóa": "Delete",
+    "Làm mới": "Refresh",
+    "Đang kiểm tra...": "Checking...",
+    "Đang quét...": "Scanning...",
+    "Đang đồng bộ...": "Syncing...",
+    "Đang xác thực...": "Authenticating...",
+    "Đang chạy...": "Running...",
+    "Chọn Active": "Set Active",
+    "BỊ KHÓA": "LOCKED",
+    "👁 ĐANG XEM": "👁 VIEWING",
+    "ĐANG XEM CHI TIẾT": "VIEWING DETAILS",
+    "ĐANG CHỌN": "SELECTED",
+    "GỢI Ý": "RECOMMENDED",
+    "Tạm dừng": "Pause",
+    "Bật lại": "Resume",
+
+    // Tab 1: OAuth & Models
+    "Thêm Tài Khoản Google Antigravity OAuth": "Add Google Antigravity OAuth Account",
+    "Hỗ trợ đăng nhập trực tiếp trên Điện thoại & Máy tính": "Supports direct sign-in on Mobile & Desktop",
+    "Đang khởi tạo liên kết bảo mật Google OAuth PKCE...": "Initializing secure Google OAuth PKCE session...",
+    "Bước 1: Mở trang Đăng nhập Google": "Step 1: Open Google Sign-In Page",
+    "Nhấn nút bên dưới để mở trang đăng nhập Google, chọn tài khoản Gmail muốn thêm vào hệ thống và nhấn Cho phép (Allow).": "Click the button below to open Google Sign-In, select the Gmail account to add, and click Allow.",
+    "1. Mở Trang Đăng Nhập Google": "1. Open Google Sign-In Page",
+    "Chưa tạo được link OAuth": "Failed to generate OAuth link",
+    "Đã sao chép đường link đăng nhập Google vào bộ nhớ tạm!": "Copied Google sign-in link to clipboard!",
+    "Bước 2: Dán đường link kết quả (Tự động kết nối ngay khi vừa dán!)": "Step 2: Paste callback URL (Auto-connects immediately on paste!)",
+    "📱 Đang dùng Điện Thoại và thấy trang «Không thể truy cập trang web này (localhost:51121)»?": "📱 On Mobile and seeing «This site can't be reached (localhost:51121)»?",
+    "Đó là dấu hiệu Google ĐÃ CẤP MÃ THÀNH CÔNG (mã code= đang nằm trong đường link localhost:51121 đó)!": "That means Google HAS GRANTED THE AUTH CODE SUCCESSFULLY (the code= parameter is inside that localhost:51121 URL)!",
+    "👉 Cách lấy mã trong 2 giây: Tại màn hình localhost:51121, bấm nút [ ⋮ ] (3 chấm góc trên bên phải) → Chọn «Sao chép đường liên kết» (Copy link) → Bấm [ X ] quay lại đây và Dán vào ô dưới:": "👉 Grab it in 2 seconds: On the localhost:51121 screen, tap [ ⋮ ] (top-right menu) → Select «Copy link» → Tap [ X ] to return here and Paste into the box below:",
+    "Chạm giữ để Dán (Paste) link http://localhost:51121/oauth-callback?state=...&code=... vào đây → Tự động kết nối ngay!": "Paste the http://localhost:51121/oauth-callback?state=...&code=... link here → Auto-connects immediately!",
+    "Đang xác thực & đồng bộ...": "Authenticating & syncing...",
+    "2. Xác Nhận & Thêm Tài Khoản": "2. Confirm & Add Account",
+    "Vui lòng dán đường link http://localhost:51121/... hoặc mã code vào ô bên dưới.": "Please paste the http://localhost:51121/... callback link or auth code into the box below.",
+    "Không thể khởi tạo phiên OAuth.": "Could not initialize OAuth session.",
+    "Xác thực thất bại.": "Authentication failed.",
+    "Chiến lược:": "Strategy:",
+    "Fill-First (Dùng cạn mới đổi)": "Fill-First (Exhaust before switch)",
+    "Round-Robin (Xoay vòng đều)": "Round-Robin (Even rotation)",
+    "Least-Used (Ưu tiên ít dùng)": "Least-Used (Lowest usage first)",
+    "Sharded (Phân mảnh thông minh)": "Sharded (Smart sharding)",
+    "Kiểm tra TK khóa": "Check Locked Accounts",
+    "Quét thông tin gói Google AI (Ultra/Pro/Free) và hạn mức quota thời gian thực": "Scan Google AI plan tier (Ultra/Pro/Free) and real-time quota limits",
+    "Quét Plan & Quota": "Scan Plan & Quota",
+    "+ Đăng nhập Tài Khoản": "+ Add OAuth Account",
+    "Chưa có tài khoản nào trong pool. Nhấn '+ Đăng nhập Tài Khoản' để xác thực.": "No accounts in the pool yet. Click '+ Add OAuth Account' to authenticate.",
+    "Đang xem hạn mức Quota của tài khoản này ở bảng bên dưới": "Currently viewing this account's Quota telemetry in the panel below",
+    "Điểm sức khỏe định tuyến (Quota % × Trọng số Gói - Phạt tải đồng thời)": "Routing health score (Quota % × Tier Weight - Concurrency Penalty)",
+    "Nhánh Claude/GPT đang tạm nghỉ; nhánh Gemini vẫn khả dụng": "Claude/GPT family cooling down; Gemini family still available",
+    "Nhánh Gemini đang tạm nghỉ; nhánh Claude/GPT vẫn khả dụng": "Gemini family cooling down; Claude/GPT family still available",
+    "Gemini (Tuần)": "Gemini (Weekly)",
+    "Claude & GPT (Tuần)": "Claude & GPT (Weekly)",
+    "Kiểm tra trực tiếp xem Google đã mở khóa tài khoản này chưa": "Live-check whether Google has unlocked this account",
+    "Kiểm tra mở khóa": "Check Unlock",
+    "Mở biểu mẫu kháng nghị chính thức của Google Antigravity": "Open official Google Antigravity appeal form",
+    "Kháng nghị ↗": "Appeal ↗",
+    "Quét lại Plan & Quota của tài khoản này": "Rescan Plan & Quota for this account",
+    "Xóa tài khoản": "Remove account",
+    "Theo dõi tỷ lệ sử dụng thực tế và chu kỳ hồi phục • Nhấp vào bất kỳ thẻ tài khoản nào ở trên để xem quota của tài khoản đó": "Monitor real-time usage and reset cycles • Click any account card above to inspect its quota",
+    "Đang quét Quota...": "Scanning Quota...",
+    "Làm mới Quota tài khoản này": "Refresh Account Quota",
+    "Chưa tải được bảng quota chi tiết từ Google Code Assist cho tài khoản này.": "Detailed quota telemetry has not been loaded from Google Code Assist for this account yet.",
+    "Quét Quota Trực Tiếp Ngay": "Scan Live Quota Now",
+    "Danh Mục Mô Hình Khả Dụng": "Available Model Catalog",
+    "Tự động khám phá qua quyền hạn tài khoản (Gemini 3.7, Claude Sonnet/Opus, GPT-OSS)": "Dynamically discovered via account entitlements (Gemini 3.7, Claude Sonnet/Opus, GPT-OSS)",
+    "Tìm mô hình...": "Search models...",
+    "Tài khoản đã được mở khóa!": "Account has been unlocked!",
+    "Tài khoản vẫn đang bị khóa.": "Account is still locked.",
+    "Đã cập nhật gói và hạn mức quota!": "Updated plan tier and quota limits!",
+    "Tất cả tài khoản đều đang ở trạng thái SẴN SÀNG (không có tài khoản nào bị khóa).": "All accounts are READY (no locked accounts found).",
+    "Không có tài khoản nào trong pool để làm mới.": "No accounts in the pool to refresh.",
+    "Quét plan/quota thất bại.": "Failed to scan plan/quota.",
+
+    // Tab 2: Gemini Web App Pool
+    "Xin chào! Hãy xác nhận bạn đang phản hồi từ Gemini Web App (Argon/Pro).": "Hello! Please confirm you are responding from Gemini Web App (Argon/Pro).",
+    "Vui lòng dán đường link kết quả (http://localhost:51121/oauth-callback?code=...) vào ô Bước 2.": "Please paste the callback URL (http://localhost:51121/oauth-callback?code=...) into Step 2.",
+    "Xác thực Google thất bại.": "Google authentication failed.",
+    "Hãy nhấn '1. Mở Trang Đăng Nhập Google' bên dưới để xác thực tài khoản mới!": "Click '1. Open Google Sign-In Page' below to authenticate a new account!",
+    "Chưa tìm thấy phiên có sẵn.": "No existing session found.",
+    "Đã lưu node Gemini Web!": "Saved Gemini Web node!",
+    "Không thể nhập Cookie Gemini Web": "Failed to import Gemini Web cookies",
+    "Không thể nhập Cookie Gemini Web.": "Failed to import Gemini Web cookies.",
+    "Đã đồng bộ từ Browser & Google Pool": "Synced from Browser & Google Pool",
+    "Đã xoay Cookie": "Cookies rotated",
+    "Đã xóa node": "Node deleted",
+    "Quản Lý Bể Gemini Web App Độc Lập (gemini.google.com/app)": "Dedicated Gemini Web App Pool Manager (gemini.google.com/app)",
+    "Khai thác hạn mức 4 Argon (Nhiệm vụ phức tạp), 3.1 Pro, 3.8 Flash & 3.5 Flash-Lite trực tiếp trên nền Web App (hoạt động độc lập ngay cả khi tài khoản bị hết hoặc khóa quota Code Assist).": "Harvest 4 Argon (Complex tasks), 3.1 Pro, 3.8 Flash & 3.5 Flash-Lite quota directly from the Web App (operates independently even when Code Assist quota is exhausted or locked).",
+    "+ Thêm Node Web (Tự Động)": "+ Add Web Node (Auto)",
+    "Đồng Bộ Từ Browser": "Sync From Browser",
+    "Xoay Cookie Toàn Bể": "Rotate All Cookies",
+    "Chế Độ Định Tuyến Giữa Code Assist & Gemini Web:": "Routing Mode Between Code Assist & Gemini Web:",
+    "Hybrid Failover — Tự động tràn sang Gemini Web khi Code Assist <=10% hoặc 429/403": "Hybrid Failover — Auto-overflow to Gemini Web when Code Assist <=10% or HTTP 429/403",
+    "Web-First — Ưu tiên dùng hết Quota Gemini Web trước cho mọi model Gemini": "Web-First — Prioritize Gemini Web Quota first for all Gemini models",
+    "Isolated — Tách biệt 100% (Chỉ dùng bể Web khi chọn model gemini-web-*)": "Isolated — 100% Separate (Use Web pool only when selecting gemini-web-* models)",
+    "Chiến Lược Xoay Vòng Riêng Cho Bể Gemini Web:": "Rotation Strategy for Gemini Web Pool:",
+    "Sticky Session — Giữ ngữ cảnh hội thoại [cid, rid, rcid] phía server Google": "Sticky Session — Preserve server-side conversation context [cid, rid, rcid]",
+    "Least-Used — Ưu tiên Node còn nhiều % Quota Argon/Pro nhất": "Least-Used — Prefer Node with highest remaining Argon/Pro Quota %",
+    "Round-Robin — Chia đều lượt gọi giữa các Node Web": "Round-Robin — Distribute requests evenly across Web Nodes",
+    "Phiên Google / Cookie 1PSID:": "Google Session / 1PSID Cookie:",
+    "Thiếu Phiên": "Missing Session",
+    "CSRF SNlM0e & Tự xoay 9m:": "CSRF SNlM0e & 9m Auto-Rotate:",
+    "Chưa lấy SNlM0e": "SNlM0e Not Fetched",
+    "4 Argon — Nhiệm vụ phức tạp": "4 Argon — Complex tasks",
+    "3.1 Pro / 2.5 Pro — Suy luận nâng cao": "3.1 Pro / 2.5 Pro — Advanced reasoning",
+    "Xoay Cookie": "Rotate Cookie",
+    "Làm mới phiên": "Refresh Session",
+    "Test Argon/Web": "Test Argon/Web",
+    "Chưa có Node nào trong Bể Gemini Web App": "No Nodes in the Gemini Web App Pool Yet",
+    "Nhấn 'Đồng Bộ Từ Browser' hoặc '+ Thêm Node Web (Tự Động)' để tự động bắt phiên Google (Email, Gói Pro/Ultra, Cookie & Hạn mức Argon/Pro) chỉ với 1 chạm!": "Click 'Sync From Browser' or '+ Add Web Node (Auto)' to automatically capture Google sessions (Email, Pro/Ultra Tier, Cookies & Argon/Pro Quota) with 1 click!",
+    "Bắt Tự Động Từ Browser / Google Pool": "Auto-Capture From Browser / Google Pool",
+    "Kết Nối Tự Động Node Gemini Web App": "Auto-Connect Gemini Web App Node",
+    "Tự động phát hiện Email, Tên hiển thị, Gói Pro/Ultra & CSRF Token (Không cần nhập tay)": "Auto-detects Email, Display Name, Pro/Ultra Tier & CSRF Token (Zero manual typing)",
+    "Cách 1 (Khuyên dùng): Tự Động Bắt 1-Chạm Từ Trình Duyệt & Google Pool": "Option 1 (Recommended): 1-Click Auto-Capture From Browser & Google Pool",
+    "Tự động quét và trích xuất toàn bộ phiên Google đang đăng nhập từ Browser Profile (Camofox / Flow Storage State) và Bể Google OAuth sẵn có trên hệ thống mà không cần nhập bất kỳ thông tin nào.": "Automatically scans and extracts all signed-in Google sessions from Browser Profiles (Camofox / Flow Storage State) and the existing Google OAuth Pool with zero manual input.",
+    "Đang tự động quét & bắt phiên Google...": "Scanning & capturing Google sessions...",
+    "🚀 Bắt Tự Động Từ Browser / Google Pool Ngay": "🚀 Auto-Capture From Browser / Google Pool Now",
+    "Cách 2: Đăng Nhập Tài Khoản Google Mới (Trực Tiếp Trên Điện Thoại / Web)": "Option 2: Sign In With a New Google Account (Directly on Mobile / Web)",
+    "📱 Lưu ý quan trọng khi đăng nhập trên Điện Thoại:": "📱 Important note when signing in on Mobile:",
+    "Khi chọn tài khoản Gmail xong, màn hình điện thoại hiện «Không thể truy cập trang web này — localhost:51121 đã từ chối kết nối» nghĩa là Google ĐÃ CẤP MÃ THÀNH CÔNG!": "After selecting your Gmail account, when your phone shows «This site can't be reached — localhost:51121 refused to connect», it means Google HAS GRANTED THE AUTH CODE SUCCESSFULLY!",
+    "👉 Tại màn hình localhost:51121 đó: Bấm nút [ ⋮ ] (3 chấm góc trên bên phải) → Chọn «Sao chép đường liên kết» (Copy link) → Bấm [ X ] quay lại đây và Dán vào ô dưới (Hệ thống TỰ ĐỘNG KẾT NỐI NGAY khi vừa dán!):": "👉 On that localhost:51121 screen: Tap [ ⋮ ] (top-right menu) → Select «Copy link» → Tap [ X ] to return here and Paste into the box below (Auto-connects immediately on paste!):",
+    "1. Mở Trang Đăng Nhập Google ↗": "1. Open Google Sign-In Page ↗",
+    "Đang tạo link đăng nhập Google...": "Generating Google sign-in link...",
+    "Nhấn Bắt Tự Động để tạo link": "Click Auto-Capture to generate link",
+    "Đã sao chép link đăng nhập Google!": "Copied Google sign-in link!",
+    "Chạm giữ để Dán (Paste) link localhost:51121 vào đây → Tự động kết nối ngay!": "Paste the localhost:51121 link here → Auto-connects immediately!",
+    "2. Xác Nhận & Gắn Node": "2. Confirm & Attach Node",
+    "📋 Tùy chọn nâng cao: Dán nhanh 1 ô (Cookie-Editor JSON / cURL — Tự bóc tách 100%)": "📋 Advanced Option: 1-Box Smart Paste (Cookie-Editor JSON / cURL — 100% Auto-Parsed)",
+    "▲ Thu gọn": "▲ Collapse",
+    "▼ Mở rộng": "▼ Expand",
+    "Chỉ cần dán 1 ô duy nhất (mảng JSON từ Cookie-Editor, lệnh cURL, hoặc storage-state.json). Hệ thống tự động bóc tách Cookie, Email, Tên hiển thị và Gói Pro/Ultra:": "Paste into a single box (Cookie-Editor JSON array, cURL command, or storage-state.json). Automatically extracts Cookies, Email, Display Name, and Pro/Ultra Tier:",
+    "Dán mảng JSON Cookie-Editor, lệnh cURL, hoặc chuỗi Cookie từ gemini.google.com/app...": "Paste Cookie-Editor JSON array, cURL command, or Cookie header from gemini.google.com/app...",
+    "Đang phân tích & kết nối...": "Parsing & connecting...",
+    "Tự Động Bóc Tách & Kết Nối": "Auto-Parse & Connect",
+    "Chọn Model Nhánh Web (gemini.google.com/app):": "Select Web Branch Model (gemini.google.com/app):",
+    "4 Argon — Nhiệm vụ phức tạp (gemini-web-4-argon)": "4 Argon — Complex tasks (gemini-web-4-argon)",
+    "4 Argon • Tư duy Cao / High (gemini-web-4-argon-high)": "4 Argon • High Thinking (gemini-web-4-argon-high)",
+    "4 Argon • Tư duy Trung bình / Medium (gemini-web-4-argon-medium)": "4 Argon • Medium Thinking (gemini-web-4-argon-medium)",
+    "4 Argon • Tư duy Thấp / Low (gemini-web-4-argon-low)": "4 Argon • Low Thinking (gemini-web-4-argon-low)",
+    "3.1 Pro — Suy luận nâng cao (gemini-web-3.1-pro)": "3.1 Pro — Advanced reasoning (gemini-web-3.1-pro)",
+    "3.1 Pro • Tư duy Cao / High (gemini-web-3.1-pro-high)": "3.1 Pro • High Thinking (gemini-web-3.1-pro-high)",
+    "3.1 Pro • Tư duy Thấp / Low (gemini-web-3.1-pro-low)": "3.1 Pro • Low Thinking (gemini-web-3.1-pro-low)",
+    "3.8 Flash — Trợ giúp toàn diện (gemini-web-3.8-flash)": "3.8 Flash — All-around assistance (gemini-web-3.8-flash)",
+    "3.8 Flash • Tư duy Cao / High (gemini-web-3.8-flash-high)": "3.8 Flash • High Thinking (gemini-web-3.8-flash-high)",
+    "3.8 Flash • Tư duy Trung bình / Medium (gemini-web-3.8-flash-medium)": "3.8 Flash • Medium Thinking (gemini-web-3.8-flash-medium)",
+    "3.8 Flash • Tư duy Thấp / Low (gemini-web-3.8-flash-low)": "3.8 Flash • Low Thinking (gemini-web-3.8-flash-low)",
+    "3.5 Flash-Lite — Câu trả lời nhanh nhất (gemini-web-3.5-flash-lite)": "3.5 Flash-Lite — Fastest responses (gemini-web-3.5-flash-lite)",
+    "Câu lệnh kiểm thử:": "Test Prompt:",
+    "Đang gửi yêu cầu tới gemini.google.com/app...": "Sending request to gemini.google.com/app...",
+    "Gửi Lệnh Test": "Run Test",
+    "Không tìm thấy node Gemini Web nào để xoay Cookie.": "No Gemini Web nodes found to rotate cookies.",
+    "Chưa tìm thấy phiên Google nào trong Browser Profile hoặc OAuth Pool. Hãy bấm '+ Thêm Node Web (Tự Động)' để đăng nhập Google 1-Chạm!": "No Google sessions found in Browser Profiles or OAuth Pool yet. Click '+ Add Web Node (Auto)' for 1-Click Google Sign-In!",
+
+    // Tab 3: Google Flow Video Studio
+    "Lỗi khởi chạy": "Launch failed",
+    "Đã hủy phiên đăng nhập": "Login session cancelled",
+    "Phiên đăng nhập đã bị hủy.": "Login session cancelled.",
+    "Đang kích hoạt làm mới token ngầm...": "Triggering headless token refresh...",
+    "Token Google Flow đã được làm mới ngầm thành công!": "Google Flow token refreshed headlessly!",
+    "Đã ngắt kết nối Google Flow thành công.": "Google Flow disconnected successfully.",
+    "Bạn có chắc chắn muốn ngắt kết nối Google Flow không?": "Are you sure you want to disconnect Google Flow?",
+    "Đã Kết Nối (Active)": "Connected (Active)",
+    "Session 30 Ngày Sẵn Sàng (Cần Làm Mới)": "30-Day Session Ready (Needs Refresh)",
+    "Chưa Kết Nối": "Disconnected",
+    "Tài khoản Google Flow (Đang chọn)": "Google Flow Account (Selected)",
+    "Chưa kết nối": "Not connected",
+    "Số dư Tín Dụng AI (Credits)": "AI Credit Balance (Credits)",
+    "Thời hạn Phiên Google": "Google Session Validity",
+    "Đã kết nối": "Connected",
+    "Token tạm hết hạn • Session 30 ngày sẵn sàng": "Token temporarily expired • 30-day session ready",
+    "Làm mới Token Ngầm": "Refresh Token (Headless)",
+    "Đăng nhập lại (1-Click Handshake)": "Re-authenticate (1-Click Handshake)",
+    "Ngắt kết nối": "Disconnect",
+    "Chưa kết nối Google Flow": "Google Flow Not Connected",
+    "Nhấn nút bên dưới để khởi chạy 1-Click Handshake. Cửa sổ trình duyệt sẽ tự động mở trên màn hình, bạn chỉ cần nhấn vào tài khoản Google và cửa sổ sẽ tự động đóng sau 1-2 giây!": "Click the button below to launch 1-Click Handshake. A browser window will open automatically—simply click your Google account and it will close in 1-2 seconds!",
+    "Kết Nối 1-Click Handshake": "Connect 1-Click Handshake",
+    "+ Thêm Tài Khoản Flow": "+ Add Flow Account",
+    "Chưa có tài khoản nào trong pool.": "No accounts in the pool yet.",
+    "Tài khoản mặc định": "Default account",
+    "5 Phân Tầng Mô Hình Video Google Flow Veo 3.1": "5 Google Flow Veo 3.1 Video Model Tiers",
+    "Chọn mô hình mặc định được lưu vào config.yaml (Agent tự động định tuyến khi tạo video)": "Select default video model saved to config.yaml (Agent auto-routes on video generation)",
+    "Chi phí:": "Cost:",
+    "Thời lượng / Tốc độ:": "Duration / Speed:",
+    "Chọn mô hình này": "Select this model",
+    "Cửa sổ Google Flow đang mở trên màn hình...": "Google Flow window is open on your screen...",
+    "Vui lòng nhìn màn hình desktop và nhấn vào tài khoản Google của bạn. Cửa sổ sẽ tự động đóng ngay lập tức khi đăng nhập hoàn tất!": "Please check your desktop screen and click your Google account. The window will close automatically once sign-in completes!",
+    "Hủy phiên đăng nhập": "Cancel login session",
+    "100% Miễn Phí": "100% Free",
+    "Tiết Kiệm": "Economy",
+    "Omni 1.1 Flash (Mặc Định)": "Omni 1.1 Flash (Default)",
+    "Tiêu Chuẩn Cân Bằng": "Balanced Standard",
+    "Chất Lượng Cao": "High Quality",
+    "Điện Ảnh Studio": "Studio Cinema",
+    "Cực nhanh (~10s)": "Ultra fast (~10s)",
+    "Nhanh (~15s)": "Fast (~15s)",
+    "Tối ưu (~20s)": "Optimal (~20s)",
+    "Trung bình (~30s)": "Medium (~30s)",
+    "Kỹ lưỡng (~60s)": "Thorough (~60s)",
+    "Tạo nháp, xem trước kịch bản, 0 credit": "Drafting, storyboard preview, 0 credits",
+    "Chi phí thấp, kiểm thử ý tưởng": "Low cost, rapid concept testing",
+    "Có âm thanh tự nhiên, chuyển động mượt mà": "Native audio generation, smooth motion",
+    "Độ nét cao, ánh sáng chân thực": "High definition, photorealistic lighting",
+    "Chi tiết quang học tối đa, chuẩn studio": "Maximum optical detail, studio grade",
+
+    // Tab 4: Image Generation Studio
+    "Vui lòng nhập mô tả ảnh (prompt)": "Please enter an image description (prompt)",
+    "Đang gửi yêu cầu sinh ảnh đến Gemini 3.1 Flash Image...": "Sending image generation request to Gemini 3.1 Flash Image...",
+    "Sinh ảnh thành công!": "Image generated successfully!",
+    "Mô hình Gemini 3.1 Flash Image qua Antigravity OAuth Bridge": "Gemini 3.1 Flash Image via Antigravity OAuth Bridge",
+    "Tỷ Lệ Khung Hình (Aspect Ratio):": "Aspect Ratio:",
+    "Prompt Mô Tả Ảnh:": "Image Prompt:",
+    "Mô tả bức ảnh bạn muốn sinh (ví dụ: A cybernetic hermes agent standing in futuristic neo-tokyo, 8k, cinematic lighting...)": "Describe the image you want to generate (e.g., A cybernetic Hermes agent standing in futuristic Neo-Tokyo, 8k, cinematic lighting...)",
+    "Model: gemini-3.1-flash-image • Tự động lưu vào ~/.hermes/media/": "Model: gemini-3.1-flash-image • Auto-saved to ~/.hermes/media/",
+    "Đang sinh ảnh...": "Generating image...",
+    "Sinh Ảnh Trực Tiếp": "Generate Image Live",
+    "Kết Quả Sinh Ảnh Thành Công": "Generated Image Result",
+    "Đã lưu cấu hình tạo ảnh thành công.": "Image generation configuration saved.",
+
+    // Tab 5: System Doctor & Logs
+    "Kiểm tra toàn diện 6 thành phần cốt lõi của suite": "Comprehensive diagnostics across core suite components",
+    "Điểm Sức Khỏe:": "Health Score:",
+    "Chạy Lại Doctor": "Re-run Doctor",
+    "Chưa có dữ liệu log ghi nhận...": "No log entries recorded yet...",
+    "Tự động gia hạn ngầm sẵn sàng": "Headless auto-refresh ready",
+    "Access token tạm hết hạn nhưng đã có refresh token.": "Access token temporarily expired, but refresh token is present.",
+    "Chưa đăng nhập": "Not signed in",
+    "Nhấn 'Đăng nhập Google OAuth' để xác thực tài khoản.": "Click '+ Add OAuth Account' to authenticate.",
+    "Đang hoạt động (ONLINE)": "Running (ONLINE)",
+    "Ở chế độ chờ (STANDBY - Auto Wake)": "Standby (STANDBY - Auto Wake)",
+    "Tự động thức dậy khi Hermes gửi câu lệnh hoặc nhấn nút Start.": "Automatically wakes up when Hermes sends a request or when Start is clicked.",
+    "Session 30 ngày & tự động duy trì phiên ngầm đang bật.": "30-day session & background keep-alive active.",
+    "Nhấn '1-Click Handshake' tại Tab Google Flow để kết nối.": "Click '1-Click Handshake' in the Google Flow tab to connect.",
+    "Danh mục 32+ Mô hình Dynamic": "32+ Dynamic Model Catalog",
+    "Danh mục Mô hình": "Model Catalog",
+    "Chưa đồng bộ mô hình": "Models not synced yet",
+    "Bao gồm Gemini 3.7 Pro/Flash, Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B.": "Includes Gemini 3.7 Pro/Flash, Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B.",
+    "Đồng bộ & Bền vững (~/.hermes/)": "Sync & Upgrade Persistence (~/.hermes/)",
+    "Đã đồng bộ an toàn": "Safely synchronized",
+    "Cần đồng bộ qua install.py": "Needs sync via install.py",
+    "Đảm bảo plugin không bị mất khi Hermes cập nhật git core.": "Ensures plugin persists across Hermes git core updates.",
+    "Chưa gắn node Web (Tùy chọn)": "No Web nodes attached (Optional)",
+    "Khai thác hạn mức Gemini Argon / 2.5 Pro / 2.5 Flash từ gemini.google.com/app.": "Harvests Gemini Argon / 2.5 Pro / 2.5 Flash quota from gemini.google.com/app.",
+
+    // Settings Widget
+    "Chưa có tài khoản active": "No active account",
+    "Tích hợp đa mô hình": "Multi-model integration",
+    "Mở Cockpit →": "Open Cockpit →"
+  };
+
+  var EN_TO_VI_EXACT = {
+    "Weekly Limit Remaining": "Hạn mức Tuần còn lại",
+    "Five Hour Limit Remaining": "Hạn mức 5 Giờ còn lại",
+    "Gemini Models": "Nhóm Mô hình Gemini",
+    "Claude and GPT models": "Nhóm Mô hình Claude & GPT"
+  };
+
+  var VI_TO_EN_PATTERNS = [
+    [/^(\d+)\s+SẴN SÀNG$/, "$1 READY"],
+    [/^(\d+)\s+BỊ KHÓA$/, "$1 LOCKED"],
+    [/^(\d+\/\d+)\s+NODE SẴN SÀNG$/, "$1 NODES READY"],
+    [/^(.*)\s+•\s+Tổng\s+(\d+)\s+tài khoản$/, "$1 • Total $2 accounts"],
+    [/^(\d+)%\s+còn lại$/, "$1% remaining"],
+    [/^Còn\s+(\d+)%\s+•\s+1h:\s+(.*)$/, "$1% left • 1h: $2"],
+    [/^Hợp lệ\s+•\s+Xoay sau\s+(\d+)p$/, "Valid • Rotates in $1m"],
+    [/^Nhấp để xem hạn mức Quota chi tiết của\s+(.*)$/, "Click to inspect detailed Quota telemetry for $1"],
+    [/^Gói Google AI:\s+(.*)$/, "Google AI Plan: $1"],
+    [/^Hạn Mức Quota API:\s+(.*)$/, "API Quota Telemetry: $1"],
+    [/^Quét trực tiếp hạn mức Quota từ Google Code Assist cho\s+(.*)$/, "Live-fetch Quota telemetry from Google Code Assist for $1"],
+    [/^Đang kết nối Google Code Assist để lấy dữ liệu hạn mức của\s+(.*)\.\.\.$/, "Connecting to Google Code Assist to fetch quota telemetry for $1..."],
+    [/^Test Trực Tiếp Gemini Web App:\s+(.*)$/, "Live Test Gemini Web App: $1"],
+    [/^THÀNH CÔNG\s+\((\d+)\s+ms\)\s+•\s+Model:\s+(.*)$/, "SUCCESS ($1 ms) • Model: $2"],
+    [/^Lỗi:\s+(.*)$/, "Error: $1"],
+    [/^Lưu ý:\s+(.*)$/, "Note: $1"],
+    [/^(\d+)\s+tài khoản đã đăng ký\s+•\s+Tự động chuyển đổi tài khoản khi hết quota$/, "$1 registered accounts • Auto-rotates accounts when quota is exhausted"],
+    [/^(\d+)\s+video tạo$/, "$1 videos created"],
+    [/^Đang dùng:\s+(.*)$/, "Active: $1"],
+    [/^File lưu tại:\s+(.*)$/, "Saved at: $1"],
+    [/^Hợp lệ\s+\((.*)\)$/, "Valid ($1)"],
+    [/^(\d+)\s+tài khoản\s+\((\d+)\s+sẵn sàng\)$/, "$1 accounts ($2 ready)"],
+    [/^Chiến lược xoay vòng:\s+(.*)$/, "Rotation strategy: $1"],
+    [/^Đã kết nối\s+\((.*)\)$/, "Connected ($1)"],
+    [/^(\d+)\s+mô hình đã khám phá$/, "$1 models discovered"],
+    [/^(\d+\/\d+)\s+node sẵn sàng\s+\((.*)\)$/, "$1 nodes ready ($2)"],
+    [/^Bạn có chắc chắn muốn gỡ tài khoản\s+(.*)\s+khỏi pool không\?$/, "Are you sure you want to remove account $1 from the pool?"],
+    [/^Đã chuyển tài khoản hoạt động sang:\s+(.*)$/, "Switched active account to: $1"],
+    [/^Đã xóa tài khoản:\s+(.*)$/, "Removed account: $1"],
+    [/^Đã cập nhật chiến lược xoay vòng:\s+(.*)$/, "Updated rotation strategy: $1"],
+    [/^Đã gán vai trò\s+'(.*)'\s+cho tài khoản\s+(.*)$/, "Assigned role '$1' to account $2"],
+    [/^Đã quét và cập nhật gói & quota cho\s+(\d+)\s+tài khoản:\s+(.*)$/, "Scanned and updated plan & quota for $1 accounts: $2"],
+    [/^Đã mở khóa & khôi phục\s+(\d+\/\d+)\s+tài khoản:\s+(.*)$/, "Unlocked & restored $1 accounts: $2"],
+    [/^Đã kiểm tra\s+(\d+)\s+tài khoản bị khóa:\s+(.*)$/, "Checked $1 locked accounts: $2"],
+    [/^Đăng nhập thành công:\s+(.*)$/, "Signed in successfully: $1"],
+    [/^Đăng nhập Google thành công:\s+(.*)$/, "Google sign-in successful: $1"],
+    [/^Đăng nhập Google thành công & đã tự động gắn vào Bể (.*):\s+(.*)$/, "Google sign-in successful & auto-linked to $1: $2"],
+    [/^Đã tự động thêm & đồng bộ Node Web:\s+(.*)$/, "Auto-added & synced Web Node: $1"],
+    [/^Đã tự động bắt\s+(\d+)\s+Node Gemini Web!$/, "Auto-captured $1 Gemini Web Nodes!"],
+    [/^Đã tự động bắt & đồng bộ\s+(\d+)\s+Node Gemini Web\s+\((.*)\)!$/, "Auto-captured & synced $1 Gemini Web Nodes ($2)!"],
+    [/^Đã tự động bắt thành công\s+(\d+)\s+phiên Google\s+\((.*)\)!$/, "Successfully auto-captured $1 Google sessions ($2)!"],
+    [/^Đã cập nhật cấu hình bể Gemini Web\s+\((.*)\)\.$/, "Updated Gemini Web pool config ($1)."],
+    [/^Đã gắn thành công Gemini Web Node\s+\((.*)\)\s+—\s+Gói:\s+(.*)$/, "Successfully attached Gemini Web Node ($1) — Tier: $2"],
+    [/^Node\s+'(.*)'\s+đã chuyển sang trạng thái:\s+ĐANG BẬT \(Active\)$/, "Node '$1' is now: ACTIVE"],
+    [/^Node\s+'(.*)'\s+đã chuyển sang trạng thái:\s+TẠM DỪNG \(Paused\)$/, "Node '$1' is now: PAUSED"],
+    [/^Đã xoay Cookie & kiểm tra phiên cho\s+(\d+\/\d+)\s+node Gemini Web\.$/, "Rotated cookies & verified sessions for $1 Gemini Web nodes."],
+    [/^Đã xóa node Gemini Web:\s+(.*)$/, "Deleted Gemini Web node: $1"],
+    [/^Kết nối Google Flow thành công:\s+(.*)$/, "Connected Google Flow: $1"],
+    [/^Phiên đăng nhập kết thúc:\s+(.*)$/, "Login session ended: $1"],
+    [/^Đã cập nhật mô hình video mặc định sang:\s+(.*)$/, "Updated default video model to: $1"],
+    [/^Đã đổi tài khoản Google Flow sang:\s+(.*)$/, "Switched Google Flow account to: $1"],
+    [/^Đã lưu tỷ lệ mặc định:\s+(.*)$/, "Saved default aspect ratio: $1"],
+    [/^Sinh ảnh thất bại:\s+(.*)$/, "Image generation failed: $1"],
+    [/^Lỗi điều khiển daemon:\s+(.*)$/, "Daemon control error: $1"],
+    [/^Lỗi chuyển tài khoản:\s+(.*)$/, "Account switch error: $1"],
+    [/^Lỗi xóa tài khoản:\s+(.*)$/, "Account removal error: $1"],
+    [/^Lỗi lưu chiến lược:\s+(.*)$/, "Strategy save error: $1"],
+    [/^Lỗi lưu role:\s+(.*)$/, "Role save error: $1"],
+    [/^Lỗi kiểm tra mở khóa:\s+(.*)$/, "Unlock check error: $1"],
+    [/^Lỗi quét plan & quota:\s+(.*)$/, "Plan & quota scan error: $1"],
+    [/^Lỗi kết nối OAuth:\s+(.*)$/, "OAuth connection error: $1"],
+    [/^Lỗi xác thực OAuth:\s+(.*)$/, "OAuth authentication error: $1"],
+    [/^Lỗi xác thực:\s+(.*)$/, "Authentication error: $1"],
+    [/^Lỗi bắt tự động:\s+(.*)$/, "Auto-capture error: $1"],
+    [/^Lỗi cập nhật cấu hình Gemini Web:\s+(.*)$/, "Gemini Web config error: $1"],
+    [/^Lỗi nhập Cookie:\s+(.*)$/, "Cookie import error: $1"],
+    [/^Lỗi đồng bộ từ Browser Profile:\s+(.*)$/, "Browser profile sync error: $1"],
+    [/^Lỗi xoay Cookie:\s+(.*)$/, "Cookie rotation error: $1"],
+    [/^Lỗi bật\/tắt node:\s+(.*)$/, "Node toggle error: $1"],
+    [/^Lỗi xóa node:\s+(.*)$/, "Node delete error: $1"],
+    [/^Lỗi khởi chạy 1-Click Handshake:\s+(.*)$/, "1-Click Handshake error: $1"],
+    [/^Lỗi làm mới:\s+(.*)$/, "Refresh error: $1"],
+    [/^Lỗi ngắt kết nối:\s+(.*)$/, "Disconnect error: $1"],
+    [/^Lỗi chuyển tài khoản Flow:\s+(.*)$/, "Flow account switch error: $1"],
+    [/^Lỗi đổi model:\s+(.*)$/, "Model change error: $1"],
+    [/^Lỗi lưu cấu hình:\s+(.*)$/, "Config save error: $1"],
+    [/^Lỗi gọi API sinh ảnh:\s+(.*)$/, "Image API error: $1"],
+    [/^Lỗi chạy Doctor:\s+(.*)$/, "Doctor run error: $1"]
+  ];
+
+  function translateText(text, lang) {
+    if (typeof text !== "string" || !text) return text;
+    var activeLang = lang || currentLang;
+    if (activeLang === "vi") {
+      return EN_TO_VI_EXACT[text] || text;
+    }
+    if (VI_TO_EN_EXACT[text] !== undefined) {
+      return VI_TO_EN_EXACT[text];
+    }
+    for (var i = 0; i < VI_TO_EN_PATTERNS.length; i++) {
+      var rule = VI_TO_EN_PATTERNS[i];
+      if (rule[0].test(text)) {
+        return text.replace(rule[0], rule[1]);
+      }
+    }
+    return text;
+  }
+
+  function translateChildrenRecursive(node) {
+    if (typeof node === "string") {
+      return translateText(node, currentLang);
+    }
+    if (Array.isArray(node)) {
+      var out = new Array(node.length);
+      for (var i = 0; i < node.length; i++) {
+        out[i] = translateChildrenRecursive(node[i]);
+      }
+      return out;
+    }
+    return node;
+  }
+
+  function h(type, props) {
+    var nextProps = props;
+    if (props && typeof props === "object") {
+      var needsClone = false;
+      if (typeof props.title === "string" && props.title) needsClone = true;
+      if (typeof props.placeholder === "string" && props.placeholder) needsClone = true;
+      if (needsClone) {
+        nextProps = Object.assign({}, props);
+        if (typeof nextProps.title === "string") {
+          nextProps.title = translateText(nextProps.title, currentLang);
+        }
+        if (typeof nextProps.placeholder === "string") {
+          nextProps.placeholder = translateText(nextProps.placeholder, currentLang);
+        }
+      }
+    }
+    var args = new Array(arguments.length);
+    args[0] = type;
+    args[1] = nextProps;
+    for (var i = 2; i < arguments.length; i++) {
+      args[i] = translateChildrenRecursive(arguments[i]);
+    }
+    return _rawCreateElement.apply(React, args);
+  }
+
+  function agConfirm(msg) {
+    return window.confirm(translateText(msg, currentLang));
+  }
+
+  // Sync with host Hermes sidebar LanguageSwitcher ([role="listbox"]) so clicking EN or VI in sidebar also works
+  function setupHostLanguageSync() {
+    if (typeof document === "undefined" || window.__AG_LANG_SYNC_ATTACHED__) return;
+    window.__AG_LANG_SYNC_ATTACHED__ = true;
+    var obs = new MutationObserver(function () {
+      var listboxes = document.querySelectorAll('[role="listbox"]');
+      for (var i = 0; i < listboxes.length; i++) {
+        var lb = listboxes[i];
+        var opts = lb.querySelectorAll('[role="option"]');
+        var hasEnglish = false;
+        var hasVietnamese = false;
+        for (var j = 0; j < opts.length; j++) {
+          var txt = (opts[j].textContent || "").trim();
+          if (txt.indexOf("English") !== -1) {
+            hasEnglish = true;
+            if (!opts[j].__agBoundEn) {
+              opts[j].__agBoundEn = true;
+              opts[j].addEventListener("click", function () {
+                setCockpitLang("en");
+              });
+            }
+          }
+          if (txt.indexOf("Tiếng Việt") !== -1) {
+            hasVietnamese = true;
+          }
+        }
+        if (hasEnglish && !hasVietnamese && opts.length > 0) {
+          var firstOpt = opts[0];
+          var viBtn = firstOpt.cloneNode(true);
+          viBtn.setAttribute("aria-selected", currentLang === "vi" ? "true" : "false");
+          var spans = viBtn.querySelectorAll("span");
+          if (spans.length >= 2) {
+            spans[0].textContent = "Tiếng Việt";
+            spans[1].textContent = "VI";
+          } else {
+            viBtn.textContent = "Tiếng Việt (VI)";
+          }
+          viBtn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            setCockpitLang("vi");
+            document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+          });
+          lb.insertBefore(viBtn, firstOpt.nextSibling);
+        }
+      }
+    });
+    if (document.body) {
+      obs.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  setupHostLanguageSync();
 
   // Safe API helper using host fetchJSON
   function apiFetch(endpoint, options) {
@@ -89,6 +606,10 @@
       ".ag-modal-dialog{background:#0e1118 !important;border:1px solid rgba(16,185,129,0.35) !important;border-radius:18px !important;width:100% !important;max-width:520px !important;padding:20px !important;box-shadow:0 25px 60px -15px rgba(0,0,0,0.85),0 0 30px rgba(16,185,129,0.1) !important;box-sizing:border-box !important;}",
       ".ag-input,.ag-select,.ag-textarea{background:#090a0f !important;border:1px solid #27272a !important;border-radius:10px !important;color:#f4f4f5 !important;font-size:12px !important;padding:8px 12px !important;outline:none !important;transition:border-color .15s ease !important;box-sizing:border-box !important;}",
       ".ag-input:focus,.ag-select:focus,.ag-textarea:focus{border-color:#10b981 !important;}",
+      ".ag-lang-switch{display:inline-flex !important;align-items:center !important;gap:4px !important;padding:3px 5px 3px 8px !important;background:#141822 !important;border:1px solid #27272a !important;border-radius:10px !important;height:34px !important;box-sizing:border-box !important;}",
+      ".ag-lang-btn{display:inline-flex !important;align-items:center !important;justify-content:center !important;padding:3px 8px !important;border-radius:7px !important;font-size:11px !important;font-weight:700 !important;font-family:monospace !important;color:#a1a1aa !important;background:transparent !important;border:1px solid transparent !important;cursor:pointer !important;transition:all .15s ease !important;line-height:1.2 !important;}",
+      ".ag-lang-btn:hover{color:#fff !important;}",
+      ".ag-lang-btn-active{background:linear-gradient(135deg,#059669 0%,#0d9488 100%) !important;color:#fff !important;border-color:rgba(52,211,153,0.35) !important;box-shadow:0 2px 8px rgba(16,185,129,0.3) !important;}",
       ".ag-cockpit-root svg{flex-shrink:0;}",
       ".w-3{width:12px !important;}.h-3{height:12px !important;}.w-3\\.5{width:14px !important;}.h-3\\.5{height:14px !important;}.w-4{width:16px !important;}.h-4{height:16px !important;}.w-5{width:20px !important;}.h-5{height:20px !important;}.w-6{width:24px !important;}.h-6{height:24px !important;}",
       "@keyframes ag-led-blink{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(.9);}}",
@@ -97,6 +618,26 @@
     document.head.appendChild(styleEl);
   }
   ensureCockpitStyles();
+
+  function renderLanguageSwitcher(lang) {
+    return h("div", {
+      className: "ag-lang-switch",
+      key: "lang-switcher",
+      title: "Chuyển đổi ngôn ngữ Tiếng Việt / Tiếng Anh",
+    }, [
+      h(Icon, { name: "globe", className: "w-3.5 h-3.5 text-zinc-400" }),
+      h("button", {
+        type: "button",
+        onClick: function () { setCockpitLang("vi"); },
+        className: "ag-lang-btn " + (lang === "vi" ? "ag-lang-btn-active" : ""),
+      }, "VI"),
+      h("button", {
+        type: "button",
+        onClick: function () { setCockpitLang("en"); },
+        className: "ag-lang-btn " + (lang === "en" ? "ag-lang-btn-active" : ""),
+      }, "EN"),
+    ]);
+  }
 
   // ---------------------------------------------------------------------------
   // Vector Icons (High-End Anti-Slop, Pure SVG, Zero Emojis)
@@ -221,16 +762,18 @@
   // Main Cockpit Component
   // ---------------------------------------------------------------------------
   function AntigravityCockpit() {
+    var lang = useCockpitLang();
     var activeTabState = useState("oauth");
     var activeTab = activeTabState[0];
     var setActiveTab = activeTabState[1];
 
     var toastObj = useToast ? useToast() : null;
     function notify(msg, type) {
+      var translated = translateText(msg, currentLang);
       if (toastObj && toastObj.showToast) {
-        toastObj.showToast(msg, type || "info");
+        toastObj.showToast(translated, type || "info");
       } else {
-        console.log("[" + (type || "info") + "] " + msg);
+        console.log("[" + (type || "info") + "] " + translated);
       }
     }
 
@@ -299,6 +842,9 @@
 
       // Right Daemon Telemetry & Controls
       h("div", { className: "flex flex-wrap items-center gap-2", key: "controls" }, [
+        // Bilingual VI | EN Switcher
+        renderLanguageSwitcher(lang),
+
         // Daemon pill
         h("div", {
           className: "ag-badge " + (daemon.running ? "ag-badge-emerald" : "ag-badge-neutral"),
@@ -379,15 +925,15 @@
     // -------------------------------------------------------------------------
     var contentNode;
     if (activeTab === "oauth") {
-      contentNode = h(TabOAuthAndModels, { notify: notify, daemonRunning: daemon.running });
+      contentNode = h(TabOAuthAndModels, { notify: notify, daemonRunning: daemon.running, lang: lang });
     } else if (activeTab === "gemini_web") {
-      contentNode = h(TabGeminiWebPool, { notify: notify });
+      contentNode = h(TabGeminiWebPool, { notify: notify, lang: lang });
     } else if (activeTab === "flow") {
-      contentNode = h(TabGoogleFlow, { notify: notify });
+      contentNode = h(TabGoogleFlow, { notify: notify, lang: lang });
     } else if (activeTab === "image") {
-      contentNode = h(TabImageGen, { notify: notify });
+      contentNode = h(TabImageGen, { notify: notify, lang: lang });
     } else if (activeTab === "doctor") {
-      contentNode = h(TabDoctorAndLogs, { notify: notify, fetchDaemon: fetchDaemon });
+      contentNode = h(TabDoctorAndLogs, { notify: notify, fetchDaemon: fetchDaemon, lang: lang });
     }
 
     return h("div", { className: "ag-cockpit-root max-w-6xl mx-auto p-4 md:p-6" }, [
@@ -401,6 +947,7 @@
   // TAB 1B: DEDICATED GEMINI WEB APP POOL MANAGER (`gemini.google.com/app`)
   // ===========================================================================
   function TabGeminiWebPool(props) {
+    useCockpitLang();
     var notify = props.notify;
     var poolState = useState({
       config: {
@@ -451,7 +998,7 @@
     var testModel = testModelState[0];
     var setTestModel = testModelState[1];
 
-    var testPromptState = useState("Xin chào! Hãy xác nhận bạn đang phản hồi từ Gemini Web App (Argon/Pro).");
+    var testPromptState = useState(translateText("Xin chào! Hãy xác nhận bạn đang phản hồi từ Gemini Web App (Argon/Pro).", currentLang));
     var testPrompt = testPromptState[0];
     var setTestPrompt = testPromptState[1];
 
@@ -1217,6 +1764,7 @@
   // TAB 1: OAUTH & MODEL CATALOG
   // ===========================================================================
   function TabOAuthAndModels(props) {
+    useCockpitLang();
     var notify = props.notify;
     var accountsState = useState([]);
     var accounts = accountsState[0];
@@ -1366,7 +1914,7 @@
     }
 
     function handleRemove(email) {
-      if (!confirm("Bạn có chắc chắn muốn gỡ tài khoản " + email + " khỏi pool không?")) return;
+      if (!agConfirm("Bạn có chắc chắn muốn gỡ tài khoản " + email + " khỏi pool không?")) return;
       apiFetch("/accounts/remove", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2190,6 +2738,7 @@
   // TAB 2: GOOGLE FLOW VEO VIDEO STUDIO
   // ===========================================================================
   function TabGoogleFlow(props) {
+    useCockpitLang();
     var notify = props.notify;
     var flowStatusState = useState(null);
     var flowStatus = flowStatusState[0];
@@ -2287,7 +2836,7 @@
     }
 
     function handleDisconnect() {
-      if (!confirm("Bạn có chắc chắn muốn ngắt kết nối Google Flow không?")) return;
+      if (!agConfirm("Bạn có chắc chắn muốn ngắt kết nối Google Flow không?")) return;
       apiFetch("/flow/disconnect", { method: "POST" }).then(function (res) {
         notify(res.message, "success");
         loadFlowData();
@@ -2607,6 +3156,7 @@
   // TAB 3: IMAGE GENERATION STUDIO
   // ===========================================================================
   function TabImageGen(props) {
+    useCockpitLang();
     var notify = props.notify;
     var imgCfgState = useState({ provider: "antigravity", aspect_ratio: "16:9", available_aspect_ratios: [] });
     var imgCfg = imgCfgState[0];
@@ -2774,6 +3324,7 @@
   // TAB 4: SYSTEM DOCTOR & LIVE LOGS
   // ===========================================================================
   function TabDoctorAndLogs(props) {
+    useCockpitLang();
     var notify = props.notify;
     var fetchDaemon = props.fetchDaemon;
 
@@ -2934,6 +3485,7 @@
   // SETTINGS SLOT WIDGET (Dual-Mode: Embedded into settings:providers)
   // ===========================================================================
   function AntigravitySettingsWidget() {
+    var lang = useCockpitLang();
     var state = useState({ active_email: null, running: false, credits: null });
     var data = state[0];
     var setData = state[1];
@@ -2963,9 +3515,12 @@
             h("div", { className: "text-xs text-zinc-400" }, data.active_email || "Chưa có tài khoản active"),
           ]),
         ]),
-        h("span", {
-          className: "ag-badge " + (data.running ? "ag-badge-emerald" : "ag-badge-neutral"),
-        }, data.running ? "BRIDGE ONLINE" : "STANDBY"),
+        h("div", { className: "flex items-center gap-2" }, [
+          renderLanguageSwitcher(lang),
+          h("span", {
+            className: "ag-badge " + (data.running ? "ag-badge-emerald" : "ag-badge-neutral"),
+          }, data.running ? "BRIDGE ONLINE" : "STANDBY"),
+        ]),
       ]),
       h("div", {
         className: "flex items-center justify-between text-xs pt-2",

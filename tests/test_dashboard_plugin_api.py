@@ -196,4 +196,24 @@ class TestDashboardPluginAPI:
         assert item["plan_name"] == "Google AI Pro"
         assert item["tier_id"] == "g1-pro-tier"
 
+    def test_bilingual_vi_en_language_switcher(self):
+        """Verify dashboard bundle includes full Vietnamese and English i18n switcher and dictionary."""
+        js_bundle = _PLUGIN_DIR / "dashboard" / "dist" / "index.js"
+        css_file = _PLUGIN_DIR / "dashboard" / "dist" / "style.css"
+
+        js_content = js_bundle.read_text(encoding="utf-8")
+        css_content = css_file.read_text(encoding="utf-8")
+
+        assert 'LANG_STORAGE_KEY = "ag_cockpit_lang"' in js_content
+        assert "function setCockpitLang" in js_content
+        assert "function useCockpitLang" in js_content
+        assert "function renderLanguageSwitcher" in js_content
+        assert "VI_TO_EN_EXACT" in js_content
+        assert "EN_TO_VI_EXACT" in js_content
+        assert "VI_TO_EN_PATTERNS" in js_content
+        assert "translateText" in js_content
+        assert ".ag-lang-switch" in css_content
+        assert ".ag-lang-btn-active" in css_content
+
+
 

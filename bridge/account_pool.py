@@ -512,7 +512,7 @@ class AntigravityAccountPoolManager:
                     last = float(raw_accs[target].get("last_request_time", 0.0) or 0.0)
 
             elapsed = now - last
-            if 0.0 < elapsed < effective_interval:
+            if last > 0.0 and 0.0 <= elapsed < effective_interval:
                 delay = effective_interval - elapsed
 
             new_timestamp = now + delay

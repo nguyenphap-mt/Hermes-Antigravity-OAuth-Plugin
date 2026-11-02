@@ -470,3 +470,47 @@
 .ag-mono {
   font-family: "Geist Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
+
+/* ---------------------------------------------------------------------------
+ * Bilingual Language Switcher (VI | EN Segmented Control)
+ * --------------------------------------------------------------------------- */
+.ag-lang-switch {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 3px 5px 3px 8px !important;
+  background: #141822 !important;
+  border: 1px solid #27272a !important;
+  border-radius: 10px !important;
+  height: 34px !important;
+  box-sizing: border-box !important;
+}
+
+.ag-lang-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 3px 8px !important;
+  border-radius: 7px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  font-family: "Geist Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  color: #a1a1aa !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  line-height: 1.2 !important;
+}
+
+.ag-lang-btn:hover {
+  color: #ffffff !important;
+}
+
+.ag-lang-btn-active {
+  background: linear-gradient(135deg, #059669 0%, #0d9488 100%) !important;
+  color: #ffffff !important;
+  border-color: rgba(52, 211, 153, 0.35) !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3) !important;
+}
+
