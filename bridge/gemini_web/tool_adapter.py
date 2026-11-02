@@ -23,7 +23,7 @@ _TOOL_CALL_TAG_RE = re.compile(
 )
 
 _TOOL_CALL_FENCE_RE = re.compile(
-    r"```(?:tool_call|xml)\s*(?:<tool_call>)?\s*(\{.*?\})\s*(?:</tool_call>)?\s*```",
+    r"```(?:tool_call|xml|json)\s*(?:<tool_call>)?\s*(\{.*?\})\s*(?:</tool_call>)?\s*```",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -110,37 +110,54 @@ class GeminiWebToolAdapter:
         if tool_choice == "none":
             has_tools = False
 
-        # When continuing an existing server-side conversation ([cid, rid, rcid]) and the last turn(s)
-        # are tool results or a single new user message, we can send only the incremental delta!
+        # Build tool_call_id -> tool_name lookup map from all assistant tool_calls
+        tool_id_to_name: Dict[str, str] = {}
+        for msg in messages:
+            if isinstance(msg, dict) and str(msg.get("role") or "").lower() == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        tc_id = str(tc.get("id") or "").strip()
+                        fn = tc.get("function") or {}
+                        fn_name = str(fn.get("name") or "").strip()
+                        if tc_id and fn_name:
+                            tool_id_to_name[tc_id] = fn_name
+
+        # When continuing an existing server-side conversation ([cid, rid, rcid]) and there is at least
+        # one prior assistant turn, send all new messages after the last assistant turn.
         if incremental_only and messages:
-            trailing_Slice: List[Dict[str, Any]] = []
-            for msg in reversed(messages):
-                role = str(msg.get("role") or "")
-                if role == "tool" or role == "function":
-                    trailing_Slice.insert(0, msg)
-                elif role == "user" and not trailing_Slice:
-                    trailing_Slice.insert(0, msg)
+            last_assistant_idx = -1
+            for idx in range(len(messages) - 1, -1, -1):
+                if isinstance(messages[idx], dict) and str(messages[idx].get("role") or "").lower() == "assistant":
+                    last_assistant_idx = idx
                     break
-                else:
-                    break
-            if trailing_Slice:
+            if last_assistant_idx >= 0 and last_assistant_idx + 1 < len(messages):
+                trailing_Slice = messages[last_assistant_idx + 1 :]
                 inc_lines: List[str] = []
+                has_tool_resp = False
                 for m in trailing_Slice:
-                    r = str(m.get("role") or "")
+                    r = str(m.get("role") or "").lower()
                     if r in ("tool", "function"):
-                        t_name = m.get("name") or m.get("tool_call_id") or "tool"
-                        t_id = m.get("tool_call_id") or ""
+                        has_tool_resp = True
+                        t_id = str(m.get("tool_call_id") or "")
+                        t_name = str(m.get("name") or tool_id_to_name.get(t_id) or t_id or "tool")
                         inc_lines.append(
                             f'<tool_response id="{t_id}" name="{t_name}">\n{_coerce_text(m.get("content"))}\n</tool_response>'
                         )
                     else:
                         inc_lines.append(_coerce_text(m.get("content")))
                 if has_tools:
-                    inc_lines.append(
-                        "\n[INSTRUCTION]: Continue assisting the user based on the tool response(s) above. "
-                        "If you need to invoke another tool, output ONLY the exact <tool_call>{...}</tool_call> XML block. "
-                        "Otherwise, provide your final response directly."
-                    )
+                    if has_tool_resp:
+                        inc_lines.append(
+                            "\n[INSTRUCTION]: Continue assisting the user based on the tool response(s) above. "
+                            "If you need to invoke another tool, output ONLY the exact <tool_call>{...}</tool_call> XML block. "
+                            "Otherwise, provide your final response directly."
+                        )
+                    else:
+                        inc_lines.append(
+                            "\n[INSTRUCTION]: If you need to invoke a tool to fulfill this request, "
+                            "output ONLY the exact <tool_call>{...}</tool_call> XML block. "
+                            "Otherwise, respond directly to the user."
+                        )
                 return "\n\n".join(inc_lines).strip(), has_tools
 
         sections: List[str] = []
@@ -178,10 +195,14 @@ class GeminiWebToolAdapter:
                 transcript_blocks.append(f"[USER]\n{text.strip()}\n[/USER]")
             elif role == "assistant":
                 parts_str: List[str] = []
+                reasoning = str(msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+                if reasoning:
+                    parts_str.append(f"<thinking>\n{reasoning}\n</thinking>")
                 if text.strip():
                     parts_str.append(text.strip())
                 for tc in tool_calls:
                     if isinstance(tc, dict):
+                        tc_id = str(tc.get("id") or "")
                         fn = tc.get("function") or {}
                         tc_name = fn.get("name") or ""
                         tc_args_raw = fn.get("arguments") or "{}"
@@ -189,13 +210,16 @@ class GeminiWebToolAdapter:
                             tc_args = json.loads(tc_args_raw) if isinstance(tc_args_raw, str) else tc_args_raw
                         except Exception:
                             tc_args = {"raw": str(tc_args_raw)}
-                        tc_json = json.dumps({"name": tc_name, "arguments": tc_args}, ensure_ascii=False)
+                        tc_payload: Dict[str, Any] = {"name": tc_name, "arguments": tc_args}
+                        if tc_id:
+                            tc_payload = {"id": tc_id, "name": tc_name, "arguments": tc_args}
+                        tc_json = json.dumps(tc_payload, ensure_ascii=False)
                         parts_str.append(f"<tool_call>\n{tc_json}\n</tool_call>")
                 joined_assistant = "\n".join(parts_str)
                 transcript_blocks.append(f"[ASSISTANT]\n{joined_assistant}\n[/ASSISTANT]")
             elif role in ("tool", "function"):
-                t_name = msg.get("name") or msg.get("tool_call_id") or "tool"
-                t_id = msg.get("tool_call_id") or ""
+                t_id = str(msg.get("tool_call_id") or "")
+                t_name = str(msg.get("name") or tool_id_to_name.get(t_id) or t_id or "tool")
                 transcript_blocks.append(
                     f'[TOOL_RESPONSE id="{t_id}" name="{t_name}"]\n{text.strip()}\n[/TOOL_RESPONSE]'
                 )

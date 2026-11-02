@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-End Audit Loop for Gemini Web App Quota Bridge & Hermes Agent Tool Execution.
+"""End-to-End Audit Loop for Gemini Web App Quota Bridge & Hermes Agent Memory Persistence.
 
-Verifies all 4 core stages of the Gemini Web App Quota Bridge (PRD v1.2):
+Verifies all 7 core stages of the Gemini Web App Quota Bridge & Memory Persistence (PRD v1.2):
 1. Stage 1 — Real Hermes Agent (`AIAgent` + `read_file` tool) multi-turn execution over `gemini-web-argon`
    with `<antigravity_tool_protocol>` compilation, `<tool_call>` parsing, and `[cid, rid, rcid]` context persistence.
 2. Stage 2 — Real Hermes Agent (`AIAgent` + `terminal` tool) multi-turn execution over `gemini-web-2.5-pro`.
@@ -9,6 +9,9 @@ Verifies all 4 core stages of the Gemini Web App Quota Bridge (PRD v1.2):
    Tracking + Proactive High-Water Mark (`<= 10%`) Node Switching.
 4. Stage 4 — Dedicated Dashboard Management APIs (9 `/gemini-web/*` endpoints + `/doctor` check) and
    Zero-Leak Security Audit (`0o600` storage + masked telemetry).
+5. Stage 5 — Stateless Linked OAuth Bridge (`oauth_bridge:`) 3-Turn Memory Audit (`RC-01` & `RC-02`).
+6. Stage 6 — Multi-Node Failover Turn-Desync Recovery Audit (`RC-03`).
+7. Stage 7 — Tool Call ID Correlation + ```json Fence + Trailing Metadata `rcid` Audit (`RC-04`, `RC-05`, `RC-06`).
 """
 
 from __future__ import annotations
@@ -50,8 +53,11 @@ for cand in HERMES_CANDIDATES:
 from bridge.client import AntigravityClient
 from bridge.gemini_web import (
     GEMINI_WEB_MODELS,
+    GeminiWebClient,
     GeminiWebPoolManager,
+    GeminiWebToolAdapter,
     build_model_selector_header,
+    parse_bard_stream_generate_response,
 )
 from bridge.server import AntigravityBridgeServer
 
@@ -516,6 +522,286 @@ def run_audit() -> Dict[str, Any]:
                 ],
                 "zero_cookie_secret_leak_verified": True,
                 "doctor_gemini_web_check": doc_checks["gemini_web_pool"],
+            }
+
+            # =========================================================================
+            # STAGE 5: Stateless Linked OAuth Bridge (`oauth_bridge:`) 3-Turn Memory Audit
+            # =========================================================================
+            oauth_bridge_dir = tmp_dir / "stage5_oauth_bridge"
+            oauth_bridge_dir.mkdir(parents=True, exist_ok=True)
+            (oauth_bridge_dir / "auth").mkdir(parents=True, exist_ok=True)
+            (oauth_bridge_dir / "auth" / "antigravity_tokens.json").write_text(
+                json.dumps(
+                    {
+                        "accounts": [
+                            {
+                                "email": "oauth.bridge.node@gmail.com",
+                                "access_token": "ya29.audit_stage5_token",
+                                "refresh_token": "1//audit_stage5_refresh",
+                                "expires_at": int(time.time()) + 3600,
+                                "project_id": "audit-stage5-proj",
+                                "tier_id": "g1-pro-tier",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pool_s5 = GeminiWebPoolManager(hermes_dir=oauth_bridge_dir)
+            asyncio.run(
+                pool_s5.import_or_update_node(
+                    psid="oauth_bridge:oauth.bridge.node@gmail.com",
+                    psidts="oauth_linked",
+                    email="oauth.bridge.node@gmail.com",
+                    display_name="Stage 5 OAuth Bridge Node",
+                    verify_immediately=False,
+                )
+            )
+            pool_s5.session_manager.save_session(
+                node_id="gweb_oauth_bridge_node_gmail_com",
+                cookies={"__Secure-1PSID": "oauth_bridge:oauth.bridge.node@gmail.com"},
+                snlm0e="oauth_bridge:oauth.bridge.node@gmail.com",
+            )
+
+            s5_prompts: List[str] = []
+
+            async def _fake_s5_post(url: str, json: Any = None, **kw):
+                p_txt = ""
+                if isinstance(json, dict):
+                    contents = ((json.get("request") or {}).get("contents") or [{}])[0]
+                    parts = contents.get("parts") or [{}]
+                    p_txt = str(parts[0].get("text") or "")
+                s5_prompts.append(p_txt)
+                r = MagicMock()
+                r.status_code = 200
+                turn_idx = len(s5_prompts)
+                if turn_idx == 1:
+                    ans = '<tool_call>{"name": "read_file", "arguments": {"path": "/tmp/s5.txt"}}</tool_call>'
+                elif turn_idx == 2:
+                    ans = "Đã đọc file /tmp/s5.txt với mã: SECRET_OMEGA_777."
+                else:
+                    ans = (
+                        "Mã bí mật ở lượt 1-2 là SECRET_OMEGA_777."
+                        if "SECRET_OMEGA_777" in p_txt
+                        else "AMNESIA_DETECTED"
+                    )
+                r.json.return_value = {
+                    "response": {
+                        "candidates": [{"content": {"parts": [{"text": ans}]}}]
+                    }
+                }
+                return r
+
+            http_s5 = MagicMock()
+            http_s5.post = _fake_s5_post
+            gweb_s5 = GeminiWebClient(pool_manager=pool_s5, http_client=http_s5)
+
+            tools_schema = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a file",
+                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                }
+            ]
+            s5_msgs: List[Dict[str, Any]] = [
+                {"role": "system", "content": "You are Hermes Agent with persistent memory."},
+                {"role": "user", "content": "Hãy đọc file /tmp/s5.txt và ghi nhớ mã SECRET_OMEGA_777."},
+            ]
+            c_t1 = asyncio.run(
+                gweb_s5.create_chat_completion({"model": "gemini-web-argon", "messages": s5_msgs, "tools": tools_schema})
+            )
+            tc_s5 = c_t1["choices"][0]["message"]["tool_calls"][0]
+            s5_msgs.append(c_t1["choices"][0]["message"])
+            s5_msgs.append({"role": "tool", "tool_call_id": tc_s5["id"], "content": "FILE_DATA=SECRET_OMEGA_777"})
+
+            c_t2 = asyncio.run(
+                gweb_s5.create_chat_completion({"model": "gemini-web-argon", "messages": s5_msgs, "tools": tools_schema})
+            )
+            s5_msgs.append(c_t2["choices"][0]["message"])
+            s5_msgs.append({"role": "user", "content": "Nhắc lại mã bí mật ở các lượt trước là gì?"})
+
+            c_t3 = asyncio.run(
+                gweb_s5.create_chat_completion({"model": "gemini-web-argon", "messages": s5_msgs, "tools": tools_schema})
+            )
+            ans_t3 = c_t3["choices"][0]["message"]["content"]
+            assert "SECRET_OMEGA_777" in ans_t3, f"Stage 5 amnesia on Turn 3: {ans_t3}"
+            # Verify all 3 stateless OAuth Bridge turns included full transcript & system instruction
+            for idx, p_sent in enumerate(s5_prompts, 1):
+                assert "[SYSTEM_INSTRUCTION]" in p_sent, f"Stage 5 Turn {idx} lost [SYSTEM_INSTRUCTION]"
+                assert "<antigravity_tool_protocol>" in p_sent, f"Stage 5 Turn {idx} lost tool protocol"
+            assert pool_s5.get_conversation_context(
+                pool_s5.compute_session_key({"messages": s5_msgs}),
+                "gweb_oauth_bridge_node_gmail_com",
+            ) is None
+
+            report["stages"]["stage5_stateless_oauth_bridge_multiturn_memory"] = {
+                "passed": True,
+                "turns_verified": 3,
+                "fake_cid_prevented": True,
+                "turn3_response": ans_t3,
+            }
+
+            # =========================================================================
+            # STAGE 6: Multi-Node Failover Turn-Desync Recovery Audit (`RC-03`)
+            # =========================================================================
+            s6_dir = tmp_dir / "stage6_turn_desync"
+            pool_s6 = GeminiWebPoolManager(hermes_dir=s6_dir)
+            for idx, em in enumerate(("nodeA@gmail.com", "nodeB@gmail.com"), 1):
+                asyncio.run(
+                    pool_s6.import_or_update_node(
+                        psid=f"g.s6_psid_{idx}",
+                        psidts=f"sidts_s6_{idx}",
+                        email=em,
+                        display_name=f"Stage 6 Node {idx}",
+                        verify_immediately=False,
+                    )
+                )
+            for nid in ("gweb_nodea_gmail_com", "gweb_nodeb_gmail_com"):
+                pool_s6.session_manager.save_session(
+                    node_id=nid,
+                    cookies={"__Secure-1PSID": f"g.psid_{nid}", "__Secure-1PSIDTS": f"sidts_{nid}"},
+                    snlm0e=f"SNlM0e_{nid}",
+                    cfb2h="boq_assistant-bard-web-server_20261102",
+                    fsid="-112233",
+                )
+
+            s6_calls: List[Dict[str, Any]] = []
+
+            async def _fake_s6_post(url: str, content: Any = None, **kw):
+                qs = urllib.parse.parse_qs(content.decode("utf-8") if isinstance(content, bytes) else str(content))
+                outer = json.loads((qs.get("f.req") or ["[]"])[0])
+                inner = json.loads(outer[1])
+                p_str = inner[0][0]
+                ctx_arr = inner[2]
+                s6_calls.append({"prompt": p_str, "ctx": ctx_arr})
+                r = MagicMock()
+                r.status_code = 200
+                step = len(s6_calls)
+                r.text = _make_bard_stream_generate_envelope(
+                    text=f" Phản hồi lượt {step} thành công (NOI_DUNG_LUOT_{step}).",
+                    cid=f"cid_step_{step}",
+                    rid=f"rid_step_{step}",
+                    rcid=f"rcid_step_{step}",
+                )
+                return r
+
+            http_s6 = MagicMock()
+            http_s6.post = _fake_s6_post
+            gweb_s6 = GeminiWebClient(pool_manager=pool_s6, http_client=http_s6)
+
+            s6_msgs: List[Dict[str, Any]] = [
+                {"role": "system", "content": "System instruction Stage 6"},
+                {"role": "user", "content": "Câu hỏi lượt 1: Mã KHO_BAU_01"},
+            ]
+            # Turn 1 on Node A
+            r6_1 = asyncio.run(
+                gweb_s6.create_chat_completion(
+                    {"model": "gemini-web-argon", "messages": s6_msgs},
+                    preferred_node_id="gweb_nodea_gmail_com",
+                )
+            )
+            s6_msgs.append(r6_1["choices"][0]["message"])
+
+            # Turn 2 forced onto Node B (simulating failover/cooldown on Node A during Turn 2)
+            s6_msgs.append({"role": "user", "content": "Câu hỏi lượt 2: Mã KHO_BAU_02"})
+            r6_2 = asyncio.run(
+                gweb_s6.create_chat_completion(
+                    {"model": "gemini-web-argon", "messages": s6_msgs},
+                    preferred_node_id="gweb_nodeb_gmail_com",
+                )
+            )
+            s6_msgs.append(r6_2["choices"][0]["message"])
+
+            # Turn 3 returns to Node A -> Node A's old Turn 1 hash would desync if not invalidated/checked!
+            s6_msgs.append({"role": "user", "content": "Câu hỏi lượt 3: Tổng hợp cả KHO_BAU_01 và KHO_BAU_02"})
+            r6_3 = asyncio.run(
+                gweb_s6.create_chat_completion(
+                    {"model": "gemini-web-argon", "messages": s6_msgs},
+                    preferred_node_id="gweb_nodea_gmail_com",
+                )
+            )
+            assert len(s6_calls) == 3
+            # Turn 3 on Node A MUST have detected Turn Desync (`ctx == ["", "", ""]`) and sent Full Transcript containing Turn 2!
+            assert s6_calls[2]["ctx"][0] == "", f"Expected reset cid on Turn Desync, got {s6_calls[2]['ctx']}"
+            assert "KHO_BAU_01" in s6_calls[2]["prompt"]
+            assert "KHO_BAU_02" in s6_calls[2]["prompt"]
+            assert "NOI_DUNG_LUOT_2" in s6_calls[2]["prompt"]
+
+            report["stages"]["stage6_multinode_failover_turn_desync_recovery"] = {
+                "passed": True,
+                "turn3_ctx_reset": s6_calls[2]["ctx"],
+                "turn2_history_preserved_in_turn3_prompt": True,
+            }
+
+            # =========================================================================
+            # STAGE 7: Tool Call ID Correlation + ```json Fence + Trailing `rcid` Audit
+            # =========================================================================
+            s7_payload = {
+                "model": "gemini-web-argon",
+                "messages": [
+                    {"role": "system", "content": "You are Hermes."},
+                    {"role": "user", "content": "Check files."},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "First inspect both files.",
+                        "tool_calls": [
+                            {
+                                "id": "call_alpha_001",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'},
+                            },
+                            {
+                                "id": "call_beta_002",
+                                "type": "function",
+                                "function": {"name": "search_files", "arguments": '{"pattern": "secret"}'},
+                            },
+                        ],
+                    },
+                    # Note: OpenAI `role: "tool"` messages WITHOUT `"name"` field, plus a trailing user note
+                    {"role": "tool", "tool_call_id": "call_alpha_001", "content": "Alpha content"},
+                    {"role": "tool", "tool_call_id": "call_beta_002", "content": "Beta match"},
+                    {"role": "user", "content": "Also summarize both results in Vietnamese."},
+                ],
+                "tools": tools_schema,
+            }
+            inc_prompt, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(s7_payload, incremental_only=True)
+            assert '<tool_response id="call_alpha_001" name="read_file">' in inc_prompt
+            assert '<tool_response id="call_beta_002" name="search_files">' in inc_prompt
+            assert "Also summarize both results in Vietnamese." in inc_prompt
+
+            full_prompt_s7, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(s7_payload, incremental_only=False)
+            assert '[TOOL_RESPONSE id="call_alpha_001" name="read_file"]' in full_prompt_s7
+            assert '[TOOL_RESPONSE id="call_beta_002" name="search_files"]' in full_prompt_s7
+            assert "<thinking>\nFirst inspect both files.\n</thinking>" in full_prompt_s7
+            assert '"id": "call_alpha_001"' in full_prompt_s7
+
+            # Verify ```json fenced tool_call parsing
+            fenced_json_output = 'Tôi sẽ gọi tool:\n```json\n{"name": "read_file", "arguments": {"path": "/etc/hosts"}}\n```'
+            tcs_fenced, cleaned_fenced = GeminiWebToolAdapter.extract_tool_calls_and_clean_text(fenced_json_output)
+            assert len(tcs_fenced) == 1
+            assert tcs_fenced[0]["function"]["name"] == "read_file"
+            assert "```" not in cleaned_fenced
+
+            # Verify trailing metadata frame with empty candidate text does NOT overwrite valid `rcid`
+            frame1_inner = json.dumps([None, ["c_s7", "r_s7"], None, None, [["rc_valid_text_frame", ["Hello from Frame 1"]]]])
+            frame1_outer = json.dumps([["wrb.fr", None, frame1_inner]])
+            frame2_inner = json.dumps([None, ["c_s7", "r_s7"], None, None, [["rc_empty_metadata_frame", [""]]]])
+            frame2_outer = json.dumps([["wrb.fr", None, frame2_inner]])
+            multi_frame_raw = f")}}]'\n\n{len(frame1_outer)}\n{frame1_outer}\n{len(frame2_outer)}\n{frame2_outer}\n"
+            parsed_mf = parse_bard_stream_generate_response(multi_frame_raw)
+            assert parsed_mf["ok"] is True
+            assert parsed_mf["text"] == "Hello from Frame 1"
+            assert parsed_mf["rcid"] == "rc_valid_text_frame"
+
+            report["stages"]["stage7_tool_correlation_json_fence_and_rcid_guard"] = {
+                "passed": True,
+                "tool_id_to_name_verified": True,
+                "json_fence_tool_call_verified": True,
+                "rcid_preserved": parsed_mf["rcid"],
             }
 
             report["all_passed"] = True

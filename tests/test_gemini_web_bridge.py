@@ -440,7 +440,25 @@ def test_discover_cookies_from_flow_storage_state_and_oauth_pool(tmp_path: Path)
 
 
 def test_resolve_pkce_session_matches_state_when_session_id_lost_on_mobile(monkeypatch, tmp_path):
-    import dashboard.plugin_api as papi
+    try:
+        import dashboard.plugin_api as papi
+    except ImportError:
+        import importlib.util
+
+        cand_paths = [
+            _HERE.parent.parent.parent / "Hermes-Antigravity-OAuth-Plugin" / "dashboard" / "plugin_api.py",
+            Path.home() / "Hermes-Antigravity-OAuth-Plugin" / "dashboard" / "plugin_api.py",
+        ]
+        papi = None
+        for cp in cand_paths:
+            if cp.is_file():
+                spec = importlib.util.spec_from_file_location("dashboard_plugin_api", cp)
+                if spec and spec.loader:
+                    papi = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(papi)
+                    break
+        if papi is None:
+            pytest.skip("dashboard.plugin_api not present in standalone workspace")
 
     store_file = tmp_path / "pkce_sessions.json"
     monkeypatch.setattr(papi, "_get_pkce_store_file", lambda: store_file)
@@ -479,7 +497,10 @@ def test_resolve_pkce_session_matches_state_when_session_id_lost_on_mobile(monke
 def test_refresh_account_plan_passes_companion_project_and_upgrades_gemini_web_node(monkeypatch, tmp_path):
     import urllib.error
     import urllib.request
-    from bridge.account_pool import AntigravityAccountPoolManager
+    try:
+        from bridge.account_pool import AntigravityAccountPoolManager
+    except ImportError:
+        from tools.antigravity_bridge.account_pool import AntigravityAccountPoolManager
 
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir(parents=True, exist_ok=True)
@@ -570,5 +591,262 @@ def test_refresh_account_plan_passes_companion_project_and_upgrades_gemini_web_n
     assert len(nodes) == 1
     assert nodes[0].detected_tier == "pro"
     assert nodes[0].display_name == "nguyenphap.pub (Google AI Pro)"
+
+
+# =============================================================================
+# 6. Multi-Turn Memory Persistence, Turn-Desync Guard & Tool Correlation Tests
+# =============================================================================
+
+def test_oauth_bridge_stateless_never_persists_fake_cid_and_preserves_multiturn_memory(tmp_path: Path):
+    """Verify RC-01 & RC-02: Stateless OAuth-Bridge never stores a fake cid and always sends full transcript."""
+    async def _run():
+        auth_dir = tmp_path / "auth"
+        auth_dir.mkdir(parents=True, exist_ok=True)
+        (auth_dir / "antigravity_tokens.json").write_text(
+            json.dumps(
+                {
+                    "accounts": [
+                        {
+                            "email": "stateless.oauth@gmail.com",
+                            "access_token": "ya29.test_stateless_token",
+                            "refresh_token": "1//test_stateless_refresh",
+                            "expires_at": int(time.time()) + 3600,
+                            "project_id": "test-proj-stateless",
+                            "tier_id": "g1-pro-tier",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+        await pool.import_or_update_node(
+            psid="oauth_bridge:stateless.oauth@gmail.com",
+            psidts="oauth_linked",
+            email="stateless.oauth@gmail.com",
+            display_name="Stateless OAuth Node",
+            verify_immediately=False,
+        )
+        pool.session_manager.save_session(
+            node_id="gweb_stateless_oauth_gmail_com",
+            cookies={"__Secure-1PSID": "oauth_bridge:stateless.oauth@gmail.com"},
+            snlm0e="oauth_bridge:stateless.oauth@gmail.com",
+        )
+
+        sent_prompts = []
+
+        async def _fake_post(url: str, json: dict = None, **kwargs):
+            prompt_sent = ""
+            if isinstance(json, dict):
+                contents = ((json.get("request") or {}).get("contents") or [{}])[0]
+                parts = contents.get("parts") or [{}]
+                prompt_sent = str(parts[0].get("text") or "")
+            sent_prompts.append(prompt_sent)
+
+            resp = MagicMock()
+            resp.status_code = 200
+            if len(sent_prompts) == 1:
+                text = "Tôi đã ghi nhớ mã dự án là PROJECT_PHOENIX_999."
+            else:
+                text = (
+                    "Mã dự án bạn vừa nói ở lượt 1 là PROJECT_PHOENIX_999."
+                    if "PROJECT_PHOENIX_999" in prompt_sent
+                    else "Tôi không nhớ lượt trước."
+                )
+            resp.json.return_value = {
+                "response": {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+            }
+            return resp
+
+        mock_http = MagicMock()
+        mock_http.post = _fake_post
+        gweb_client = GeminiWebClient(pool_manager=pool, http_client=mock_http)
+
+        messages = [
+            {"role": "system", "content": "Always remember user facts."},
+            {"role": "user", "content": "Hãy nhớ mã dự án của tôi là PROJECT_PHOENIX_999."},
+        ]
+        res1 = await gweb_client.create_chat_completion({"model": "gemini-web-argon", "messages": messages})
+        messages.append(res1["choices"][0]["message"])
+        messages.append({"role": "user", "content": "Mã dự án của tôi là gì?"})
+
+        res2 = await gweb_client.create_chat_completion({"model": "gemini-web-argon", "messages": messages})
+        assert "PROJECT_PHOENIX_999" in res2["choices"][0]["message"]["content"]
+        assert len(sent_prompts) == 2
+        assert "[SYSTEM_INSTRUCTION]" in sent_prompts[1]
+        assert "PROJECT_PHOENIX_999" in sent_prompts[1]
+        assert pool.get_conversation_context(
+            pool.compute_session_key({"messages": messages}),
+            "gweb_stateless_oauth_gmail_com",
+        ) is None
+
+    asyncio.run(_run())
+
+
+def test_turn_desync_on_node_failover_triggers_full_transcript_resync(tmp_path: Path):
+    """Verify RC-03: If Turn 2 executes on Node 2 and Turn 3 returns to Node 1, Node 1 detects history_hash mismatch and resyncs."""
+    async def _run():
+        import urllib.parse
+
+        pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+        for idx, email in enumerate(("n1@gmail.com", "n2@gmail.com"), 1):
+            await pool.import_or_update_node(
+                psid=f"g.psid_{idx}",
+                psidts=f"sidts_{idx}",
+                email=email,
+                display_name=f"Node {idx}",
+                verify_immediately=False,
+            )
+        for nid in ("gweb_n1_gmail_com", "gweb_n2_gmail_com"):
+            pool.session_manager.save_session(
+                node_id=nid,
+                cookies={"__Secure-1PSID": f"g.psid_{nid}", "__Secure-1PSIDTS": f"sidts_{nid}"},
+                snlm0e=f"SNlM0e_{nid}",
+                cfb2h="boq_assistant-bard-web-server_20261102",
+                fsid="-554433",
+            )
+
+        recorded_calls = []
+
+        async def _fake_bard_post(url: str, content=None, **kwargs):
+            qs = urllib.parse.parse_qs(content.decode("utf-8") if isinstance(content, bytes) else str(content))
+            outer = json.loads((qs.get("f.req") or ["[]"])[0])
+            inner = json.loads(outer[1])
+            recorded_calls.append({"prompt": inner[0][0], "ctx": inner[2]})
+            turn = len(recorded_calls)
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = _make_bard_rpc_response(
+                text=f"Answer Turn {turn}",
+                cid=f"cid_t{turn}",
+                rid=f"rid_t{turn}",
+                rcid=f"rcid_t{turn}",
+            )
+            return resp
+
+        mock_http = MagicMock()
+        mock_http.post = _fake_bard_post
+        gweb_client = GeminiWebClient(pool_manager=pool, http_client=mock_http)
+
+        # Also verify static `user` key disambiguation for new conversations
+        key_conv_a = pool.compute_session_key(
+            {"user": "static_user_1", "messages": [{"role": "user", "content": "Topic A"}]}
+        )
+        key_conv_b = pool.compute_session_key(
+            {"user": "static_user_1", "messages": [{"role": "user", "content": "Topic B"}]}
+        )
+        assert key_conv_a != key_conv_b
+
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Turn 1 fact: FACT_ONE"},
+        ]
+        r1 = await gweb_client.create_chat_completion(
+            {"model": "gemini-web-argon", "messages": msgs},
+            preferred_node_id="gweb_n1_gmail_com",
+        )
+        msgs.append(r1["choices"][0]["message"])
+
+        # Turn 2 continues on the SAME Node 1 -> should use incremental_only=True (`cid_t1`)
+        msgs.append({"role": "user", "content": "Turn 2 fact: FACT_TWO"})
+        r2_same = await gweb_client.create_chat_completion(
+            {"model": "gemini-web-argon", "messages": msgs},
+            preferred_node_id="gweb_n1_gmail_com",
+        )
+        assert recorded_calls[1]["ctx"][0] == "cid_t1"
+        assert "FACT_ONE" not in recorded_calls[1]["prompt"]
+
+        # Now Turn 3 runs on Node 2 -> Node 2 has no context, sends Full Transcript
+        msgs.append(r2_same["choices"][0]["message"])
+        msgs.append({"role": "user", "content": "Turn 3 fact on Node 2: FACT_THREE"})
+        r3_node2 = await gweb_client.create_chat_completion(
+            {"model": "gemini-web-argon", "messages": msgs},
+            preferred_node_id="gweb_n2_gmail_com",
+        )
+        msgs.append(r3_node2["choices"][0]["message"])
+
+        # Turn 4 switches back to Node 1 -> Node 1's stored hash is from Turn 2, so it MUST detect Turn Desync!
+        msgs.append({"role": "user", "content": "Turn 4 back on Node 1: recall all facts"})
+        await gweb_client.create_chat_completion(
+            {"model": "gemini-web-argon", "messages": msgs},
+            preferred_node_id="gweb_n1_gmail_com",
+        )
+        assert recorded_calls[3]["ctx"][0] == ""
+        assert "FACT_ONE" in recorded_calls[3]["prompt"]
+        assert "FACT_TWO" in recorded_calls[3]["prompt"]
+        assert "FACT_THREE" in recorded_calls[3]["prompt"]
+
+    asyncio.run(_run())
+
+
+def test_tool_call_id_correlation_and_trailing_slice_preservation():
+    """Verify RC-04 & RC-05: tool_call_id resolves to function name even when role='tool' omits 'name', and trailing slice preserves all post-assistant messages."""
+    payload = {
+        "model": "gemini-web-argon",
+        "messages": [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Run two tools."},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "Need both read_file and terminal.",
+                "tool_calls": [
+                    {
+                        "id": "call_111",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "config.yaml"}'},
+                    },
+                    {
+                        "id": "call_222",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command": "uname -a"}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_111", "content": "port: 8080"},
+            {"role": "tool", "tool_call_id": "call_222", "content": "Linux x86_64"},
+            {"role": "user", "content": "Format the output as a table."},
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}},
+            }
+        ],
+    }
+
+    inc_prompt, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(payload, incremental_only=True)
+    assert '<tool_response id="call_111" name="read_file">' in inc_prompt
+    assert '<tool_response id="call_222" name="terminal">' in inc_prompt
+    assert "Format the output as a table." in inc_prompt
+
+    full_prompt, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(payload, incremental_only=False)
+    assert '[TOOL_RESPONSE id="call_111" name="read_file"]' in full_prompt
+    assert '[TOOL_RESPONSE id="call_222" name="terminal"]' in full_prompt
+    assert "<thinking>\nNeed both read_file and terminal.\n</thinking>" in full_prompt
+    assert '"id": "call_111"' in full_prompt
+
+
+def test_parse_bard_stream_generate_response_ignores_empty_trailing_rcid_and_parses_json_fence():
+    """Verify RC-06: Trailing empty metadata frame does not overwrite valid rcid, and ```json tool call fences are parsed."""
+    f1_inner = json.dumps([None, ["c_1", "r_1"], None, None, [["rc_real_candidate", ["Hello world"]]]])
+    f1_outer = json.dumps([["wrb.fr", None, f1_inner]])
+    f2_inner = json.dumps([None, ["c_1", "r_1"], None, None, [["rc_empty_trailing", [""]]]])
+    f2_outer = json.dumps([["wrb.fr", None, f2_inner]])
+    raw_stream = f")]}}'\n\n{len(f1_outer)}\n{f1_outer}\n{len(f2_outer)}\n{f2_outer}\n"
+
+    parsed = parse_bard_stream_generate_response(raw_stream)
+    assert parsed["ok"] is True
+    assert parsed["text"] == "Hello world"
+    assert parsed["rcid"] == "rc_real_candidate"
+
+    fenced_text = 'Here is the tool call:\n```json\n{"name": "web_search", "arguments": {"query": "Hermes Agent"}}\n```'
+    tcs, cleaned = GeminiWebToolAdapter.extract_tool_calls_and_clean_text(fenced_text)
+    assert len(tcs) == 1
+    assert tcs[0]["function"]["name"] == "web_search"
+    assert json.loads(tcs[0]["function"]["arguments"]) == {"query": "Hermes Agent"}
+    assert "```" not in cleaned
+
 
 

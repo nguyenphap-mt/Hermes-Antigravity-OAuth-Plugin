@@ -127,8 +127,7 @@ def parse_bard_stream_generate_response(raw_body: str) -> Dict[str, Any]:
             if len(body) > 4 and isinstance(body[4], list) and len(body[4]) > 0:
                 candidate = body[4][0]
                 if isinstance(candidate, list):
-                    if len(candidate) > 0 and candidate[0]:
-                        rcid = str(candidate[0])
+                    cand_rcid = str(candidate[0]) if (len(candidate) > 0 and candidate[0]) else ""
                     if (
                         len(candidate) > 1
                         and isinstance(candidate[1], list)
@@ -136,8 +135,12 @@ def parse_bard_stream_generate_response(raw_body: str) -> Dict[str, Any]:
                         and isinstance(candidate[1][0], str)
                     ):
                         candidate_text = candidate[1][0]
-                        if len(candidate_text) >= len(best_text):
+                        if candidate_text and len(candidate_text) >= len(best_text):
                             best_text = candidate_text
+                            if cand_rcid:
+                                rcid = cand_rcid
+                    if cand_rcid and not rcid:
+                        rcid = cand_rcid
                     # Thoughts / Reasoning trace (often in candidate[37] or candidate[2])
                     if len(candidate) > 37 and isinstance(candidate[37], list):
                         try:
@@ -213,8 +216,10 @@ class GeminiWebClient:
         prompt_text: str,
         model_name: str = "gemini-web-argon",
         conversation_ctx: Optional[List[str]] = None,
+        full_prompt_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a single `StreamGenerate` RPC request using a specific `GeminiWebNode`."""
+        effective_full_prompt = full_prompt_text or prompt_text
         close_client = False
         http = self._external_http
         if http is None:
@@ -245,7 +250,7 @@ class GeminiWebClient:
             if snlm0e.startswith("oauth_bridge:"):
                 return await self._generate_via_linked_oauth_account(
                     node=node,
-                    prompt_text=prompt_text,
+                    prompt_text=effective_full_prompt,
                     model_name=model_name,
                     http=http,
                 )
@@ -257,7 +262,14 @@ class GeminiWebClient:
                 node_available_models=node.available_models,
             )
 
-            async def _do_post(cur_snlm0e: str, cur_cfb2h: str, cur_fsid: str, cur_model_hdr: Optional[str]) -> httpx.Response:
+            async def _do_post(
+                cur_snlm0e: str,
+                cur_cfb2h: str,
+                cur_fsid: str,
+                cur_model_hdr: Optional[str],
+                cur_prompt: str = prompt_text,
+                cur_ctx: Optional[List[str]] = conversation_ctx,
+            ) -> httpx.Response:
                 req_id = random.randint(100000, 999999)
                 query_params = {
                     "bl": cur_cfb2h,
@@ -281,7 +293,7 @@ class GeminiWebClient:
 
                 form_body = urllib.parse.urlencode(
                     {
-                        "f.req": self._build_f_req_payload(prompt_text, conversation_ctx),
+                        "f.req": self._build_f_req_payload(cur_prompt, cur_ctx),
                         "at": cur_snlm0e,
                     }
                 )
@@ -290,7 +302,7 @@ class GeminiWebClient:
             resp = await _do_post(snlm0e, cfb2h, fsid, model_header_val)
             parsed = parse_bard_stream_generate_response(resp.text if resp.status_code == 200 else "")
 
-            # Self-healing retry: if SNlM0e expired or custom model hex was rejected, re-handshake and fallback
+            # Self-healing retry: if SNlM0e expired or custom model hex / stale cid was rejected, re-handshake and fallback
             if not parsed.get("ok"):
                 logger.info(
                     "Node '%s' returned empty/error on first attempt (%s); refreshing SNlM0e & retrying with self-healing fallback...",
@@ -304,7 +316,7 @@ class GeminiWebClient:
                     if new_snlm0e.startswith("oauth_bridge:"):
                         return await self._generate_via_linked_oauth_account(
                             node=node,
-                            prompt_text=prompt_text,
+                            prompt_text=effective_full_prompt,
                             model_name=model_name,
                             http=http,
                         )
@@ -314,6 +326,8 @@ class GeminiWebClient:
                         str(sess.get("cfb2h") or cfb2h),
                         str(sess.get("fsid") or fsid),
                         None,  # Fallback to UI default model if custom hex header caused failure
+                        cur_prompt=effective_full_prompt,
+                        cur_ctx=None,
                     )
                     if resp2.status_code == 200:
                         parsed = parse_bard_stream_generate_response(resp2.text)
@@ -321,7 +335,7 @@ class GeminiWebClient:
             if not parsed.get("ok") and (node.email or node.linked_oauth_account_id):
                 fallback_res = await self._generate_via_linked_oauth_account(
                     node=node,
-                    prompt_text=prompt_text,
+                    prompt_text=effective_full_prompt,
                     model_name=model_name,
                     http=http,
                 )
@@ -543,13 +557,17 @@ class GeminiWebClient:
             if not text_out:
                 return {"ok": False, "error": "Empty candidate text from linked Google account."}
 
+            # Stateless REST endpoint (`v1internal:generateContent`) does NOT persist server-side
+            # `[cid, rid, rcid]` context. Never return a fake `cid` so subsequent turns always
+            # compile the full conversation transcript.
             return {
                 "ok": True,
                 "text": text_out,
                 "thoughts": thoughts_out,
-                "cid": f"c_{node.node_id[:10]}",
-                "rid": f"r_{int(time.time())}",
-                "rcid": f"rc_{int(time.time())}",
+                "cid": "",
+                "rid": "",
+                "rcid": "",
+                "is_stateful": False,
                 "images": [],
                 "error": None,
                 "error_code": None,
@@ -566,6 +584,12 @@ class GeminiWebClient:
         requested_model = str(openai_payload.get("model") or "gemini-web-argon")
         canonical_model = resolve_gemini_web_model(requested_model)
         session_key = self.pool.compute_session_key(openai_payload)
+        messages: List[Dict[str, Any]] = list(openai_payload.get("messages") or [])
+        expected_history_hash = self.pool.compute_history_hash(messages, include_trailing=False)
+        full_prompt_text, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(
+            openai_payload,
+            incremental_only=False,
+        )
 
         excluded_nodes: Set[str] = set()
         all_nodes = self.pool.list_nodes()
@@ -586,36 +610,55 @@ class GeminiWebClient:
                 break
 
             excluded_nodes.add(node.node_id)
-            conv_ctx = self.pool.get_conversation_context(session_key, node.node_id)
-            prompt_text, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(
-                openai_payload,
-                incremental_only=bool(conv_ctx),
+            conv_ctx = self.pool.get_conversation_context(
+                session_key,
+                node.node_id,
+                expected_history_hash=expected_history_hash,
             )
+            if conv_ctx:
+                prompt_text, _ = GeminiWebToolAdapter.compile_openai_to_web_prompt(
+                    openai_payload,
+                    incremental_only=True,
+                )
+            else:
+                prompt_text = full_prompt_text
 
             gen_res = await self.generate_on_node(
                 node=node,
                 prompt_text=prompt_text,
+                full_prompt_text=full_prompt_text,
                 model_name=canonical_model,
                 conversation_ctx=conv_ctx,
             )
 
             if gen_res.get("ok"):
                 self.pool.record_web_usage(node.node_id, canonical_model, success=True)
-                if gen_res.get("cid"):
-                    self.pool.save_conversation_context(
-                        session_key=session_key,
-                        node_id=node.node_id,
-                        cid=str(gen_res.get("cid") or ""),
-                        rid=str(gen_res.get("rid") or ""),
-                        rcid=str(gen_res.get("rcid") or ""),
-                    )
-
                 completion = GeminiWebToolAdapter.build_openai_chat_completion(
                     raw_text=str(gen_res.get("text") or ""),
                     model=requested_model,
                     thoughts_text=str(gen_res.get("thoughts") or ""),
                     prompt_text=prompt_text,
                 )
+                if gen_res.get("cid") and gen_res.get("is_stateful", True) is not False:
+                    assistant_msg = ((completion.get("choices") or [{}])[0]).get("message") or {
+                        "role": "assistant",
+                        "content": str(gen_res.get("text") or ""),
+                    }
+                    new_history_hash = self.pool.compute_history_hash(
+                        messages + [assistant_msg],
+                        include_trailing=True,
+                    )
+                    self.pool.save_conversation_context(
+                        session_key=session_key,
+                        node_id=node.node_id,
+                        cid=str(gen_res.get("cid") or ""),
+                        rid=str(gen_res.get("rid") or ""),
+                        rcid=str(gen_res.get("rcid") or ""),
+                        history_hash=new_history_hash,
+                    )
+                else:
+                    self.pool.invalidate_conversation_context(session_key, node.node_id)
+
                 completion["x_gemini_web_node"] = node.node_id
                 completion["x_gemini_web_model"] = canonical_model
                 return completion

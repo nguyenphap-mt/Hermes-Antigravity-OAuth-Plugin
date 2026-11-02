@@ -646,22 +646,95 @@ class GeminiWebPoolManager:
         explicit_id = (
             openai_payload.get("session_id")
             or openai_payload.get("conversation_id")
-            or openai_payload.get("user")
         )
         if explicit_id:
             return f"sess_{explicit_id}"
         messages = openai_payload.get("messages") or []
+        user_id = str(openai_payload.get("user") or "").strip()
         if not messages:
-            return ""
-        # Hash the first system + first user message so multi-turn tool calls in the same task share a key
+            return f"sess_{user_id}" if user_id else ""
+        # Hash the first system + first user message so multi-turn tool calls in the same task share a key,
+        # while a brand-new conversation started by the same static `user` gets a fresh key.
         seed_parts: List[str] = []
-        for m in messages[:2]:
-            if isinstance(m, dict):
-                seed_parts.append(f"{m.get('role')}:{str(m.get('content'))[:400]}")
+        found_sys = False
+        found_usr = False
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            r = str(m.get("role") or "").lower()
+            if r in ("system", "developer") and not found_sys:
+                seed_parts.append(f"sys:{str(m.get('content'))[:400]}")
+                found_sys = True
+            elif r == "user" and not found_usr:
+                seed_parts.append(f"usr:{str(m.get('content'))[:400]}")
+                found_usr = True
+            if found_sys and found_usr:
+                break
+        if not seed_parts:
+            for m in messages[:2]:
+                if isinstance(m, dict):
+                    seed_parts.append(f"{m.get('role')}:{str(m.get('content'))[:400]}")
         digest = hashlib.sha256("|".join(seed_parts).encode("utf-8", errors="ignore")).hexdigest()[:20]
+        if user_id:
+            return f"sess_{user_id}_{digest}"
         return f"conv_{digest}"
 
-    def get_conversation_context(self, session_key: str, node_id: str) -> Optional[List[str]]:
+    @staticmethod
+    def compute_history_hash(
+        messages: List[Dict[str, Any]],
+        include_trailing: bool = False,
+    ) -> str:
+        """Compute a deterministic SHA-256 fingerprint of conversation history up to the last assistant turn."""
+        if not messages:
+            return ""
+        if include_trailing:
+            target_slice = messages
+        else:
+            last_assistant_idx = -1
+            for idx in range(len(messages) - 1, -1, -1):
+                m = messages[idx]
+                if isinstance(m, dict) and str(m.get("role") or "").lower() == "assistant":
+                    last_assistant_idx = idx
+                    break
+            if last_assistant_idx < 0:
+                return ""
+            target_slice = messages[: last_assistant_idx + 1]
+
+        norm: List[str] = []
+        for m in target_slice:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "user").lower()
+            raw_c = m.get("content")
+            if raw_c is None:
+                c_str = ""
+            elif isinstance(raw_c, str):
+                c_str = raw_c.strip()
+            elif isinstance(raw_c, list):
+                c_parts: List[str] = []
+                for item in raw_c:
+                    if isinstance(item, str):
+                        c_parts.append(item)
+                    elif isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                        c_parts.append(str(item["text"]))
+                c_str = "\n".join(c_parts).strip()
+            else:
+                c_str = str(raw_c).strip()
+
+            tc_names: List[str] = []
+            for tc in m.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    fn = tc.get("function") or {}
+                    tc_names.append(str(fn.get("name") or ""))
+            norm.append(f"{role}|{c_str}|{'^'.join(tc_names)}")
+        return hashlib.sha256("\n".join(norm).encode("utf-8", errors="ignore")).hexdigest()[:24]
+
+    def get_conversation_context(
+        self,
+        session_key: str,
+        node_id: str,
+        expected_history_hash: Optional[str] = None,
+    ) -> Optional[List[str]]:
         if not session_key:
             return None
         with self._lock:
@@ -674,6 +747,16 @@ class GeminiWebPoolManager:
             if time.time() - float(ctx.get("updated_at") or 0.0) > 3600.0:
                 del self._conversation_contexts[session_key]
                 return None
+            if expected_history_hash is not None:
+                if not expected_history_hash:
+                    # Turn 1 (no assistant turn in messages yet): never reuse stale context
+                    del self._conversation_contexts[session_key]
+                    return None
+                stored_hash = str(ctx.get("history_hash") or "")
+                if stored_hash and stored_hash != expected_history_hash:
+                    # Turn desync detected (e.g. intermediate turn ran on another node or Code Assist)
+                    del self._conversation_contexts[session_key]
+                    return None
             return [
                 str(ctx.get("cid") or ""),
                 str(ctx.get("rid") or ""),
@@ -687,6 +770,7 @@ class GeminiWebPoolManager:
         cid: str,
         rid: str,
         rcid: str,
+        history_hash: str = "",
     ) -> None:
         if not session_key or not cid:
             return
@@ -696,8 +780,17 @@ class GeminiWebPoolManager:
                 "cid": cid,
                 "rid": rid,
                 "rcid": rcid,
+                "history_hash": history_hash,
                 "updated_at": time.time(),
             }
+
+    def invalidate_conversation_context(self, session_key: str, node_id: str = "") -> None:
+        if not session_key:
+            return
+        with self._lock:
+            ctx = self._conversation_contexts.get(session_key)
+            if ctx and (not node_id or ctx.get("node_id") == node_id):
+                del self._conversation_contexts[session_key]
 
     # ─── Dashboard Serialization ──────────────────────────────────────────
 
