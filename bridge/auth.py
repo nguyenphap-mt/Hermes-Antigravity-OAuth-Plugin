@@ -857,7 +857,11 @@ class AntigravityAuthManager:
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
-                err_body = e.read().decode("utf-8", errors="replace")
+                raw_err = e.read()
+                if raw_err[:2] == b"\x1f\x8b":
+                    import gzip
+                    raw_err = gzip.decompress(raw_err)
+                err_body = raw_err.decode("utf-8", errors="replace")
             except Exception:
                 pass
             if e.code == 403 and ("violation of terms of service" in err_body.lower() or "disabled in this account" in err_body.lower()):
@@ -1051,7 +1055,11 @@ class AntigravityAuthManager:
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
-                err_body = e.read().decode("utf-8", errors="replace")
+                raw_err = e.read()
+                if raw_err[:2] == b"\x1f\x8b":
+                    import gzip
+                    raw_err = gzip.decompress(raw_err)
+                err_body = raw_err.decode("utf-8", errors="replace")
             except Exception:
                 pass
             appeal_url = "https://forms.gle/hGzM9MEUv2azZsrb9"

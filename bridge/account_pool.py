@@ -1280,7 +1280,10 @@ class AntigravityAccountPoolManager:
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
-                err_body = e.read().decode("utf-8", errors="replace")
+                raw_err = e.read()
+                if raw_err[:2] == b"\x1f\x8b":
+                    raw_err = gzip.decompress(raw_err)
+                err_body = raw_err.decode("utf-8", errors="replace")
             except Exception:
                 pass
             if e.code == 403 and (
@@ -1352,7 +1355,10 @@ class AntigravityAccountPoolManager:
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
-                err_body = e.read().decode("utf-8", errors="replace")
+                raw_err = e.read()
+                if raw_err[:2] == b"\x1f\x8b":
+                    raw_err = gzip.decompress(raw_err)
+                err_body = raw_err.decode("utf-8", errors="replace")
             except Exception:
                 pass
             if e.code == 403 and (
@@ -1387,7 +1393,10 @@ class AntigravityAccountPoolManager:
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
-                err_body = e.read().decode("utf-8", errors="replace")
+                raw_err = e.read()
+                if raw_err[:2] == b"\x1f\x8b":
+                    raw_err = gzip.decompress(raw_err)
+                err_body = raw_err.decode("utf-8", errors="replace")
             except Exception:
                 pass
             if e.code == 403 and (

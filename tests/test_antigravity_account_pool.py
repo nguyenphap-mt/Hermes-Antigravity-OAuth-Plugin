@@ -294,14 +294,15 @@ class TestAntigravityAccountPool(unittest.TestCase):
         self.assertEqual(prof_data["accounts"]["user1@gmail.com"]["status"], "disabled")
 
     def test_probe_account_unlock_status_catches_403_on_fetch_available_models(self) -> None:
-        """Verify probe_account_unlock_status keeps account disabled if loadCodeAssist returns 200 OK but fetchAvailableModels returns 403 TOS_VIOLATION."""
+        """Verify probe_account_unlock_status and refresh_account_plan_and_quota keep account disabled on gzipped 403 TOS_VIOLATION."""
+        import gzip
         import io
         import urllib.error
 
         self.pool.mark_account_disabled("user1@gmail.com", reason="HTTP 403 TOS_VIOLATION")
         auth_mgr = AntigravityAuthManager(auth_file=self.tokens_path)
 
-        err_payload = json.dumps({
+        err_payload = gzip.compress(json.dumps({
             "error": {
                 "code": 403,
                 "message": "This service has been disabled in this account for violation of Terms of Service.",
@@ -311,11 +312,11 @@ class TestAntigravityAccountPool(unittest.TestCase):
                     "metadata": {"appeal_url": "https://forms.gle/hGzM9MEUv2azZsrb9"},
                 }],
             }
-        }).encode("utf-8")
+        }).encode("utf-8"))
 
         def fake_urlopen(req, timeout=12.0):
             url = getattr(req, "full_url", str(req))
-            if "loadCodeAssist" in url:
+            if "loadCodeAssist" in url or "retrieveUserQuotaSummary" in url:
                 mock_cm = MagicMock()
                 mock_cm.headers = {}
                 mock_cm.read.return_value = json.dumps({
@@ -325,15 +326,17 @@ class TestAntigravityAccountPool(unittest.TestCase):
                 res = MagicMock()
                 res.__enter__.return_value = mock_cm
                 return res
-            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, io.BytesIO(err_payload))
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {"Content-Encoding": "gzip"}, io.BytesIO(err_payload))
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             result = auth_mgr.probe_account_unlock_status("user1@gmail.com")
+            q_result = self.pool.refresh_account_plan_and_quota("user1@gmail.com")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["unlocked"])
         self.assertEqual(result["status"], "disabled")
         self.assertEqual(result["reason"], "TOS_VIOLATION")
+        self.assertEqual(q_result["status"], "disabled")
         self.assertEqual(self.pool.get_account("user1@gmail.com").status, "disabled")
 
     def test_sharded_smooth_interleaved_distribution_across_pro_and_free_accounts(self) -> None:
