@@ -254,6 +254,185 @@ class TestAntigravityAccountPool(unittest.TestCase):
         self.assertEqual(stored.plan_type, "pro")
         self.assertEqual(stored.plan_name, "Google AI Pro")
 
+    def test_disabled_account_not_resurrected_by_other_account_save_credentials(self) -> None:
+        """Verify marking user1 disabled keeps user1 disabled even when user2 saves credentials across profile mirrors."""
+        fake_home = Path(self.temp_dir.name) / "fake_home"
+        main_tokens = fake_home / ".hermes" / "auth" / "antigravity_tokens.json"
+        profile_tokens = fake_home / ".hermes" / "profiles" / "sale-profile" / "auth" / "antigravity_tokens.json"
+        main_tokens.parent.mkdir(parents=True, exist_ok=True)
+        profile_tokens.parent.mkdir(parents=True, exist_ok=True)
+
+        # Both main and profile start with user1 active and user2 active
+        seed = json.loads(json.dumps(self.initial_data))
+        main_tokens.write_text(json.dumps(seed, indent=2), encoding="utf-8")
+        profile_tokens.write_text(json.dumps(seed, indent=2), encoding="utf-8")
+
+        pool = AntigravityAccountPoolManager(storage_path=main_tokens)
+        pool.mark_account_disabled("user1@gmail.com", reason="HTTP 403 TOS_VIOLATION")
+        self.assertEqual(pool.get_account("user1@gmail.com").status, "disabled")
+        self.assertEqual(pool.get_account("user1@gmail.com").compute_routing_health_score(), 0.0)
+
+        # Now user2 saves refreshed credentials while profile_tokens still had user1 as 'active'
+        auth_mgr = AntigravityAuthManager(auth_file=main_tokens)
+        auth_mgr._auth_file_is_custom = False
+        with patch("pathlib.Path.home", return_value=fake_home):
+            creds_u2 = AntigravityCredentials(
+                access_token="ya29.new_token_user2",
+                refresh_token="refresh_user2",
+                expires_at=time.time() + 7200,
+                email="user2@gmail.com",
+                project_id="aicode-consumers",
+            )
+            auth_mgr.save_credentials(creds_u2)
+
+        # user1 MUST remain disabled in both main_tokens and profile_tokens
+        u1_after = pool.get_account("user1@gmail.com")
+        self.assertIsNotNone(u1_after)
+        self.assertEqual(u1_after.status, "disabled")
+
+        prof_data = json.loads(profile_tokens.read_text(encoding="utf-8"))
+        self.assertEqual(prof_data["accounts"]["user1@gmail.com"]["status"], "disabled")
+
+    def test_probe_account_unlock_status_catches_403_on_fetch_available_models(self) -> None:
+        """Verify probe_account_unlock_status keeps account disabled if loadCodeAssist returns 200 OK but fetchAvailableModels returns 403 TOS_VIOLATION."""
+        import io
+        import urllib.error
+
+        self.pool.mark_account_disabled("user1@gmail.com", reason="HTTP 403 TOS_VIOLATION")
+        auth_mgr = AntigravityAuthManager(auth_file=self.tokens_path)
+
+        err_payload = json.dumps({
+            "error": {
+                "code": 403,
+                "message": "This service has been disabled in this account for violation of Terms of Service.",
+                "status": "PERMISSION_DENIED",
+                "details": [{
+                    "reason": "TOS_VIOLATION",
+                    "metadata": {"appeal_url": "https://forms.gle/hGzM9MEUv2azZsrb9"},
+                }],
+            }
+        }).encode("utf-8")
+
+        def fake_urlopen(req, timeout=12.0):
+            url = getattr(req, "full_url", str(req))
+            if "loadCodeAssist" in url:
+                mock_cm = MagicMock()
+                mock_cm.headers = {}
+                mock_cm.read.return_value = json.dumps({
+                    "cloudaicompanionProject": "companion-proj-123",
+                    "paidTier": {"id": "g1-pro-tier", "name": "Google AI Pro"},
+                }).encode("utf-8")
+                res = MagicMock()
+                res.__enter__.return_value = mock_cm
+                return res
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, io.BytesIO(err_payload))
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = auth_mgr.probe_account_unlock_status("user1@gmail.com")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["unlocked"])
+        self.assertEqual(result["status"], "disabled")
+        self.assertEqual(result["reason"], "TOS_VIOLATION")
+        self.assertEqual(self.pool.get_account("user1@gmail.com").status, "disabled")
+
+    def test_sharded_smooth_interleaved_distribution_across_pro_and_free_accounts(self) -> None:
+        """Verify sharded strategy rotates smoothly across all healthy accounts in the same shard instead of pinning 100% traffic to highest static score."""
+        seed = {
+            "active_account_email": "pro1@gmail.com",
+            "rotation_strategy": "sharded",
+            "accounts": {
+                "pro1@gmail.com": {
+                    "email": "pro1@gmail.com",
+                    "access_token": "tok_p1",
+                    "refresh_token": "ref_p1",
+                    "expires_at": time.time() + 3600,
+                    "tier_id": "g1-pro-tier",
+                    "plan_type": "pro",
+                    "status": "active",
+                    "assigned_role": "all",
+                    "quota_summary": {"claude_5h_pct": 100, "gemini_5h_pct": 100},
+                },
+                "pro2@gmail.com": {
+                    "email": "pro2@gmail.com",
+                    "access_token": "tok_p2",
+                    "refresh_token": "ref_p2",
+                    "expires_at": time.time() + 3600,
+                    "tier_id": "g1-pro-tier",
+                    "plan_type": "pro",
+                    "status": "active",
+                    "assigned_role": "all",
+                    "quota_summary": {"claude_5h_pct": 100, "gemini_5h_pct": 100},
+                },
+                "free1@gmail.com": {
+                    "email": "free1@gmail.com",
+                    "access_token": "tok_f1",
+                    "refresh_token": "ref_f1",
+                    "expires_at": time.time() + 3600,
+                    "tier_id": "free-tier",
+                    "plan_type": "free",
+                    "status": "active",
+                    "assigned_role": "all",
+                    "quota_summary": {"claude_5h_pct": 69, "gemini_5h_pct": 100},
+                },
+                "free2@gmail.com": {
+                    "email": "free2@gmail.com",
+                    "access_token": "tok_f2",
+                    "refresh_token": "ref_f2",
+                    "expires_at": time.time() + 3600,
+                    "tier_id": "free-tier",
+                    "plan_type": "free",
+                    "status": "active",
+                    "assigned_role": "all",
+                    "quota_summary": {"claude_5h_pct": 100, "gemini_5h_pct": 100},
+                },
+                "locked@gmail.com": {
+                    "email": "locked@gmail.com",
+                    "access_token": "tok_locked",
+                    "refresh_token": "ref_locked",
+                    "expires_at": time.time() + 3600,
+                    "tier_id": "g1-pro-tier",
+                    "plan_type": "pro",
+                    "status": "disabled",
+                    "assigned_role": "all",
+                    "quota_summary": {"claude_5h_pct": 100, "gemini_5h_pct": 100},
+                },
+            },
+        }
+        self.tokens_path.write_text(json.dumps(seed, indent=2), encoding="utf-8")
+        pool = AntigravityAccountPoolManager(storage_path=self.tokens_path)
+
+        counts = {"pro1@gmail.com": 0, "pro2@gmail.com": 0, "free1@gmail.com": 0, "free2@gmail.com": 0}
+        for _ in range(12):
+            chosen = pool.get_account_for_service("llm", model="claude-sonnet-4-6")
+            self.assertIsNotNone(chosen)
+            self.assertNotEqual(chosen.email, "locked@gmail.com")
+            counts[chosen.email] += 1
+            pool.acquire_lease(chosen.email)
+            pool.record_account_usage(chosen.email, success=True, model="claude-sonnet-4-6")
+            pool.release_lease(chosen.email)
+            time.sleep(0.002)
+
+        # Every healthy account must receive an equal 3 requests (smooth round-robin across healthy shard members)
+        for em, c in counts.items():
+            self.assertEqual(c, 3, f"Expected 3 requests for {em}, got {c}")
+
+    def test_failed_request_does_not_inflate_total_requests(self) -> None:
+        """Verify record_account_usage(success=False) increments failure_count without inflating total_requests."""
+        before = self.pool.get_account("user1@gmail.com")
+        self.assertEqual(before.total_requests, 5)
+        self.assertEqual(before.failure_count, 0)
+
+        self.pool.record_account_usage("user1@gmail.com", success=False, model="claude-sonnet-4-6")
+        after_fail = self.pool.get_account("user1@gmail.com")
+        self.assertEqual(after_fail.total_requests, 5)
+        self.assertEqual(after_fail.failure_count, 1)
+
+        self.pool.record_account_usage("user1@gmail.com", success=True, model="claude-sonnet-4-6")
+        after_ok = self.pool.get_account("user1@gmail.com")
+        self.assertEqual(after_ok.total_requests, 6)
+        self.assertEqual(after_ok.failure_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

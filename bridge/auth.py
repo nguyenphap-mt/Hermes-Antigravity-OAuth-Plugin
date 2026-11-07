@@ -162,6 +162,7 @@ class AntigravityAuthManager:
         self._auth_file_is_custom = auth_file is not None
         self.auth_file = auth_file or (get_hermes_dir() / "auth" / "antigravity_tokens.json")
         self._lock = threading.Lock()
+        self._resolved_project_cache: Dict[str, str] = {}
 
     @property
     def token_file(self) -> Path:
@@ -341,11 +342,41 @@ class AntigravityAuthManager:
                             # Merge keeping newer token fields while preserving non-empty metadata
                             prev_ts = float(prev_m.get("updated_at") or prev_m.get("expires_at") or 0.0)
                             curr_ts = float(acc_v.get("updated_at") or acc_v.get("expires_at") or 0.0)
-                            base_acc = dict(prev_m) if curr_ts >= prev_ts else dict(acc_v)
-                            newer_acc = acc_v if curr_ts >= prev_ts else prev_m
+                            is_curr_strictly_newer = curr_ts > prev_ts
+                            base_acc = dict(prev_m) if is_curr_strictly_newer else dict(acc_v)
+                            newer_acc = acc_v if is_curr_strictly_newer else prev_m
                             for mk, mv in newer_acc.items():
                                 if mv not in (None, "", {}, []):
                                     base_acc[mk] = mv
+                            # Preserve monotonic counters & timestamps across profile mirrors
+                            base_acc["total_requests"] = max(
+                                int(prev_m.get("total_requests", 0) or 0),
+                                int(acc_v.get("total_requests", 0) or 0),
+                            )
+                            base_acc["failure_count"] = max(
+                                int(prev_m.get("failure_count", 0) or 0),
+                                int(acc_v.get("failure_count", 0) or 0),
+                            )
+                            max_lu = max(
+                                float(prev_m.get("last_used") or 0.0),
+                                float(acc_v.get("last_used") or 0.0),
+                            )
+                            if max_lu > 0:
+                                base_acc["last_used"] = max_lu
+                            max_lrt = max(
+                                float(prev_m.get("last_request_time") or 0.0),
+                                float(acc_v.get("last_request_time") or 0.0),
+                            )
+                            if max_lrt > 0:
+                                base_acc["last_request_time"] = max_lrt
+                            # Sticky disabled guard: never let a stale profile mirror resurrect a disabled account
+                            if prev_m.get("status") == "disabled" or acc_v.get("status") == "disabled":
+                                if not (reset_status and em_k == (creds.email or "primary").strip().lower()):
+                                    base_acc["status"] = "disabled"
+                                    base_acc["exhausted_until"] = None
+                                    base_acc["disabled_reason"] = (
+                                        prev_m.get("disabled_reason") or acc_v.get("disabled_reason") or "TOS_VIOLATION"
+                                    )
                             merged_accounts[em_k] = base_acc
 
             accounts = merged_accounts
@@ -380,8 +411,19 @@ class AntigravityAuthManager:
             for k, v in new_acct.items():
                 out_data[k] = v
             out_data["accounts"] = accounts
-            if not out_data.get("active_account_email") or reset_status:
-                out_data["active_account_email"] = email_key
+            active_em_curr = str(out_data.get("active_account_email") or "").strip().lower()
+            if not active_em_curr or reset_status or (
+                isinstance(accounts.get(active_em_curr), dict)
+                and accounts[active_em_curr].get("status") == "disabled"
+            ):
+                if new_acct.get("status") != "disabled":
+                    out_data["active_account_email"] = email_key
+                else:
+                    healthy_em = next(
+                        (ek for ek, ev in accounts.items() if isinstance(ev, dict) and ev.get("status") != "disabled"),
+                        email_key,
+                    )
+                    out_data["active_account_email"] = healthy_em
 
             # Save token files using process+thread-unique temp path to avoid cross-process truncation races
             unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
@@ -637,10 +679,19 @@ class AntigravityAuthManager:
                     creds.project_id = creds.managed_project_id
 
             if not creds.project_id or (creds.project_id == DEFAULT_PROJECT_ID and not creds.managed_project_id):
-                resolved_pid = self.resolve_project_id(creds)
-                if resolved_pid:
-                    creds.project_id = resolved_pid
-                    self.save_credentials(creds)
+                em_cache_key = (creds.email or "primary").strip().lower()
+                cached_pid = self._resolved_project_cache.get(em_cache_key)
+                if cached_pid:
+                    creds.project_id = cached_pid
+                else:
+                    resolved_pid = self.resolve_project_id(creds)
+                    if resolved_pid:
+                        self._resolved_project_cache[em_cache_key] = resolved_pid
+                        if resolved_pid != creds.project_id and resolved_pid != DEFAULT_PROJECT_ID:
+                            creds.project_id = resolved_pid
+                            self.save_credentials(creds)
+                        else:
+                            creds.project_id = resolved_pid
 
             return creds
 
@@ -827,9 +878,9 @@ class AntigravityAuthManager:
         return creds.project_id or DEFAULT_PROJECT_ID
 
     def probe_account_unlock_status(self, email: str) -> Dict[str, Any]:
-        """Probe Google Code Assist (loadCodeAssist) for a specific account to check if it has been unlocked.
+        """Probe Google Code Assist (loadCodeAssist + fetchAvailableModels) for a specific account to check if it has been unlocked.
 
-        If Google returns 200 OK, automatically restores the account status to 'active' in the pool.
+        If Google returns 200 OK on both endpoints, automatically restores the account status to 'active' in the pool.
         If Google still returns 403 TOS_VIOLATION, keeps it 'disabled' and extracts the appeal URL.
         """
         target = (email or "").strip().lower()
@@ -941,6 +992,32 @@ class AntigravityAuthManager:
                 tier_id = str(data.get("tierId") or "")
             pid = self._extract_companion_project_id(data) or creds.effective_project_id or DEFAULT_PROJECT_ID
 
+            # Step 2: Verify model catalog access via fetchAvailableModels because loadCodeAssist
+            # can return HTTP 200 OK even when the account is blocked with 403 TOS_VIOLATION.
+            models_endpoints = (
+                "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+            )
+            models_body = json.dumps({"project": pid}).encode("utf-8")
+            models_headers = dict(headers)
+            if pid:
+                models_headers["X-Goog-User-Project"] = pid
+            for m_ep in models_endpoints:
+                try:
+                    m_req = urllib.request.Request(
+                        m_ep,
+                        data=models_body,
+                        headers=models_headers,
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(m_req, timeout=12.0) as m_resp:
+                        _ = m_resp.read()
+                    break
+                except urllib.error.HTTPError as m_he:
+                    if m_he.code in {404, 500, 502, 503, 504} and m_ep == models_endpoints[0]:
+                        continue
+                    raise
+
             p_low = plan_name.lower()
             t_low = tier_id.lower()
             if "ultra" in p_low or "ultra" in t_low:
@@ -992,7 +1069,13 @@ class AntigravityAuthManager:
             except Exception:
                 pass
 
-            if e.code == 403 and ("tos_violation" in reason.lower() or "violation of terms of service" in err_body.lower() or "disabled in this account" in err_body.lower()):
+            if e.code == 403 and (
+                "tos_violation" in reason.lower()
+                or "permission_denied" in reason.lower()
+                or "violation of terms of service" in err_body.lower()
+                or "disabled in this account" in err_body.lower()
+                or "permission_denied" in err_body.lower()
+            ):
                 pool.mark_account_disabled(target, reason=f"HTTP 403 {reason}")
                 return {
                     "ok": True,

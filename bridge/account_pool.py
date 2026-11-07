@@ -274,11 +274,13 @@ class AntigravityAccount:
 
     def compute_routing_health_score(self, model_id: str = "", in_flight: int = 0) -> float:
         """Compute composite routing score combining remaining quota %, plan tier weight, and in-flight load."""
+        if self.status == "disabled":
+            return 0.0
         rem_pct = self.get_remaining_quota_pct(model_id)
         plan_weight = PLAN_WEIGHTS.get(self.computed_plan_type, 1.0)
         base_score = rem_pct * plan_weight
         penalty = (max(0, int(in_flight)) * 25.0) + (max(0, int(self.consecutive_429_count)) * 20.0)
-        return round(base_score - penalty, 2)
+        return max(0.0, round(base_score - penalty, 2))
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -368,7 +370,7 @@ class AntigravityAccountPoolManager:
         return {}
 
     def _save_raw(self, data: Dict[str, Any]) -> None:
-        """Atomically write dictionary to tokens file using process+thread-unique temp file."""
+        """Atomically write dictionary to tokens file using process+thread-unique temp file and sync mirrors."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.storage_path.with_name(f"{self.storage_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
@@ -381,6 +383,51 @@ class AntigravityAccountPoolManager:
             logger.error("Failed saving account pool to %s: %s", self.storage_path, e)
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
+            return
+
+        if self.storage_path == DEFAULT_TOKENS_FILE and not os.environ.get("PYTEST_CURRENT_TEST"):
+            self._sync_mirror_files(data)
+
+    def _sync_mirror_files(self, data: Dict[str, Any]) -> None:
+        """Mirror pool state across secondary Hermes profile auth files so stale profiles never overwrite status."""
+        mirror_files: List[Path] = []
+        try:
+            dot_hermes = Path.home() / ".hermes"
+            mirror_files.append(dot_hermes / "auth" / "antigravity_tokens.json")
+            dot_profiles = dot_hermes / "profiles"
+            if dot_profiles.is_dir():
+                for p in sorted(dot_profiles.iterdir()):
+                    if p.is_dir() and not p.name.startswith("."):
+                        mirror_files.append(p / "auth" / "antigravity_tokens.json")
+            if os.name == "nt":
+                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                appdata_h = base / "hermes"
+                mirror_files.append(appdata_h / "auth" / "antigravity_tokens.json")
+                win_profiles = appdata_h / "profiles"
+                if win_profiles.is_dir():
+                    for p in sorted(win_profiles.iterdir()):
+                        if p.is_dir() and not p.name.startswith("."):
+                            mirror_files.append(p / "auth" / "antigravity_tokens.json")
+        except Exception:
+            return
+
+        unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        for mf in mirror_files:
+            try:
+                if mf.resolve() == self.storage_path.resolve():
+                    continue
+                if not mf.parent.exists() and not mf.is_file():
+                    continue
+                mf.parent.mkdir(parents=True, exist_ok=True)
+                tmp_m = mf.with_name(f"{mf.name}{unique_suffix}")
+                with open(tmp_m, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                if os.name != "nt":
+                    os.chmod(tmp_m, stat.S_IRUSR | stat.S_IWUSR)
+                os.replace(str(tmp_m), str(mf))
+            except Exception:
+                pass
 
     def _ensure_initialized(self) -> None:
         """Ensure accounts dict exists and active_account_email is tracked (saving only when modified)."""
@@ -469,6 +516,7 @@ class AntigravityAccountPoolManager:
             raw_accs = data.get("accounts", {})
             if isinstance(raw_accs, dict) and target in raw_accs:
                 raw_accs[target]["assigned_role"] = r
+                raw_accs[target]["updated_at"] = time.time()
                 data["accounts"] = raw_accs
                 self._save_raw(data)
                 return True
@@ -538,11 +586,13 @@ class AntigravityAccountPoolManager:
         return delay
 
     def acquire_lease(self, email: str) -> int:
-        """Acquire in-flight request lease for concurrency tracking."""
+        """Acquire in-flight request lease for concurrency tracking and mark immediate selection time."""
         target = email.strip().lower()
         with self._lock:
+            now = time.time()
             count = self._in_flight.get(target, 0) + 1
             self._in_flight[target] = count
+            self._last_request_times[target] = max(self._last_request_times.get(target, 0.0), now)
             return count
 
     def release_lease(self, email: str) -> int:
@@ -581,6 +631,7 @@ class AntigravityAccountPoolManager:
                     if len(active_cds) != len(acc.model_cooldowns):
                         acc.model_cooldowns = active_cds
                         raw_accs[email_key]["model_cooldowns"] = active_cds
+                        raw_accs[email_key]["updated_at"] = now
                         modified = True
 
                 # Auto-recover if cooldown has expired (never auto-recover 'disabled')
@@ -590,6 +641,7 @@ class AntigravityAccountPoolManager:
                         acc.exhausted_until = None
                         raw_accs[email_key]["status"] = "active"
                         raw_accs[email_key]["exhausted_until"] = None
+                        raw_accs[email_key]["updated_at"] = now
                         modified = True
                 result.append(acc)
 
@@ -655,13 +707,19 @@ class AntigravityAccountPoolManager:
         """Helper to compute account routing health score with live in-flight count."""
         return acc.compute_routing_health_score(model, in_flight=self.get_in_flight_count(acc.email))
 
+    def _effective_last_used(self, acc: AntigravityAccount) -> float:
+        """Return the most recent request/lease timestamp for smooth rotation."""
+        disk_lu = float(acc.last_used or 0.0)
+        mem_lu = float(self._last_request_times.get(acc.email, 0.0) or 0.0)
+        return max(disk_lu, mem_lu)
+
     def get_account_for_service(
         self,
         service_type: str = "all",  # 'llm', 'image_gen', 'all'
         exclude_emails: Optional[Set[str]] = None,
         model: str = "",
     ) -> Optional[AntigravityAccount]:
-        """Select optimal account tailored for service type and model family with Quota-Aware Routing.
+        """Select optimal account tailored for service type and model family with Quota-Aware Smooth Rotation.
         Strictly enforces cooldown, model-family availability, and soft high-water mark (10%).
         """
         exclude = {e.lower().strip() for e in (exclude_emails or set())}
@@ -683,29 +741,41 @@ class AntigravityAccountPoolManager:
         candidate_pool = healthy_accounts if healthy_accounts else ready_accounts
 
         if strategy == "sharded":
+            def _smooth_shard_key(a: AntigravityAccount) -> Tuple[int, float, float, str]:
+                return (
+                    self.get_in_flight_count(a.email),
+                    self._effective_last_used(a),
+                    -self._score_account(a, model),
+                    a.email,
+                )
+
+            chosen: Optional[AntigravityAccount] = None
             if service_type in {"llm", "image_gen"}:
                 role_matched = [a for a in candidate_pool if a.assigned_role == service_type]
                 if role_matched:
-                    role_matched.sort(
-                        key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
-                    )
-                    return role_matched[0]
+                    role_matched.sort(key=_smooth_shard_key)
+                    chosen = role_matched[0]
+                else:
+                    all_role = [a for a in candidate_pool if a.assigned_role == "all"]
+                    if all_role:
+                        all_role.sort(key=_smooth_shard_key)
+                        chosen = all_role[0]
 
-                all_role = [a for a in candidate_pool if a.assigned_role == "all"]
-                if all_role:
-                    all_role.sort(
-                        key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
-                    )
-                    return all_role[0]
+            if chosen is None:
+                candidate_pool.sort(key=_smooth_shard_key)
+                chosen = candidate_pool[0]
 
-            candidate_pool.sort(
-                key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
-            )
-            return candidate_pool[0]
+            self.set_active_account(chosen.email)
+            return chosen
 
         elif strategy == "round_robin":
             candidate_pool.sort(
-                key=lambda a: (self.get_in_flight_count(a.email), a.last_used or 0.0, -self._score_account(a, model))
+                key=lambda a: (
+                    self.get_in_flight_count(a.email),
+                    self._effective_last_used(a),
+                    -self._score_account(a, model),
+                    a.email,
+                )
             )
             chosen = candidate_pool[0]
             self.set_active_account(chosen.email)
@@ -717,7 +787,8 @@ class AntigravityAccountPoolManager:
                     self.get_in_flight_count(a.email),
                     a.total_requests,
                     -self._score_account(a, model),
-                    a.last_used or 0.0,
+                    self._effective_last_used(a),
+                    a.email,
                 )
             )
             chosen = candidate_pool[0]
@@ -735,7 +806,7 @@ class AntigravityAccountPoolManager:
                 return active
 
             candidate_pool.sort(
-                key=lambda a: (-self._score_account(a, model), a.last_used or 0.0, a.email)
+                key=lambda a: (-self._score_account(a, model), self._effective_last_used(a), a.email)
             )
             chosen = candidate_pool[0]
             self.set_active_account(chosen.email)
@@ -756,6 +827,7 @@ class AntigravityAccountPoolManager:
     ) -> Optional[AntigravityAccount]:
         """Permanently disable an account in the pool (e.g. on HTTP 403 TOS_VIOLATION) and fail over."""
         target = email.strip().lower()
+        now = time.time()
         with self._lock:
             data = self._load_raw()
             raw_accs = data.get("accounts", {})
@@ -764,6 +836,7 @@ class AntigravityAccountPoolManager:
                 raw_accs[target]["exhausted_until"] = None
                 raw_accs[target]["failure_count"] = int(raw_accs[target].get("failure_count", 0)) + 1
                 raw_accs[target]["disabled_reason"] = reason
+                raw_accs[target]["updated_at"] = now
                 data["accounts"] = raw_accs
                 self._save_raw(data)
                 logger.error(
@@ -815,6 +888,7 @@ class AntigravityAccountPoolManager:
                 raw_accs[target]["exhausted_until"] = cooldown_until
                 raw_accs[target]["failure_count"] = int(raw_accs[target].get("failure_count", 0)) + 1
                 raw_accs[target]["consecutive_429_count"] = int(raw_accs[target].get("consecutive_429_count", 0)) + 1
+                raw_accs[target]["updated_at"] = now
                 if family in {"claude", "gemini"}:
                     mc = raw_accs[target].get("model_cooldowns")
                     if not isinstance(mc, dict):
@@ -851,19 +925,21 @@ class AntigravityAccountPoolManager:
                 acct = raw_accs[target]
                 acct["last_used"] = now
                 acct["last_request_time"] = now
-                acct["total_requests"] = int(acct.get("total_requests", 0)) + 1
+                acct["updated_at"] = now
                 if success:
+                    acct["total_requests"] = int(acct.get("total_requests", 0)) + 1
                     mc = acct.get("model_cooldowns")
                     if isinstance(mc, dict) and family in mc:
                         mc.pop(family, None)
                         acct["model_cooldowns"] = mc
-                    if not acct.get("model_cooldowns"):
+                    if not acct.get("model_cooldowns") and acct.get("status") != "disabled":
                         acct["status"] = "active"
                         acct["exhausted_until"] = None
                     acct["failure_count"] = 0
                     acct["consecutive_429_count"] = 0
                 else:
                     acct["failure_count"] = int(acct.get("failure_count", 0)) + 1
+                    acct["total_errors"] = int(acct.get("total_errors", 0)) + 1
                 data["accounts"] = raw_accs
                 self._save_raw(data)
 
@@ -1201,14 +1277,36 @@ class AntigravityAccountPoolManager:
                 extracted_pid = auth_mgr._extract_companion_project_id(data)
                 if extracted_pid:
                     pid = extracted_pid
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code == 403 and (
+                "tos_violation" in err_body.lower()
+                or "violation of terms of service" in err_body.lower()
+                or "disabled in this account" in err_body.lower()
+            ):
+                self.mark_account_disabled(target, reason="HTTP 403 TOS_VIOLATION")
+                return {
+                    "ok": False,
+                    "email": target,
+                    "status": "disabled",
+                    "plan_name": plan_name,
+                    "plan_type": plan_type,
+                    "quota_summary": acc.quota_summary,
+                    "message": f"Tài khoản {target} đang bị Google khóa (HTTP 403 TOS_VIOLATION).",
+                }
+            logger.debug("loadCodeAssist HTTP %d for %s during plan refresh: %s", e.code, target, err_body[:160])
         except Exception as e:
             logger.debug("loadCodeAssist failed for %s during plan refresh: %s", target, e)
 
-        # 2. Query retrieveUserQuotaSummary
+        # 2. Query retrieveUserQuotaSummary & verify fetchAvailableModels for 403 TOS_VIOLATION
         quota_summary = dict(acc.quota_summary or {})
+        q_headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=pid)
+        q_body = json.dumps({"project": pid}).encode("utf-8")
         try:
-            q_headers = AntigravityFingerprint.build_headers(creds.access_token, project_id=pid)
-            q_body = json.dumps({"project": pid}).encode("utf-8")
             q_data: Dict[str, Any] = {}
             for ep in (QUOTA_ENDPOINT, FALLBACK_QUOTA_ENDPOINT):
                 try:
@@ -1251,8 +1349,64 @@ class AntigravityAccountPoolManager:
                                     quota_summary["claude_reset_time"] = rt
                             elif "5h" in bid:
                                 quota_summary["claude_5h_pct"] = pct
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code == 403 and (
+                "tos_violation" in err_body.lower()
+                or "violation of terms of service" in err_body.lower()
+                or "disabled in this account" in err_body.lower()
+            ):
+                self.mark_account_disabled(target, reason="HTTP 403 TOS_VIOLATION")
+                return {
+                    "ok": False,
+                    "email": target,
+                    "status": "disabled",
+                    "plan_name": plan_name,
+                    "plan_type": plan_type,
+                    "quota_summary": quota_summary,
+                    "message": f"Tài khoản {target} đang bị Google khóa (HTTP 403 TOS_VIOLATION).",
+                }
+            logger.debug("retrieveUserQuotaSummary HTTP %d for %s: %s", e.code, target, err_body[:160])
         except Exception as e:
             logger.debug("retrieveUserQuotaSummary failed for %s during quota refresh: %s", target, e)
+
+        # 2b. Probe fetchAvailableModels to detect 403 TOS_VIOLATION when loadCodeAssist returned 200 OK
+        try:
+            m_req = urllib.request.Request(
+                "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+                data=q_body,
+                headers=q_headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(m_req, timeout=10.0) as m_resp:
+                _ = m_resp.read()
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code == 403 and (
+                "tos_violation" in err_body.lower()
+                or "violation of terms of service" in err_body.lower()
+                or "disabled in this account" in err_body.lower()
+            ):
+                self.mark_account_disabled(target, reason="HTTP 403 TOS_VIOLATION")
+                return {
+                    "ok": False,
+                    "email": target,
+                    "status": "disabled",
+                    "plan_name": plan_name,
+                    "plan_type": plan_type,
+                    "quota_summary": quota_summary,
+                    "message": f"Tài khoản {target} đang bị Google khóa (HTTP 403 TOS_VIOLATION).",
+                }
+        except Exception:
+            pass
 
         # 3. Save to account and persist
         with self._lock:
@@ -1264,6 +1418,7 @@ class AntigravityAccountPoolManager:
                 if detected_tier_id:
                     raw_accs[target]["tier_id"] = detected_tier_id
                 raw_accs[target]["quota_summary"] = quota_summary
+                raw_accs[target]["updated_at"] = time.time()
                 if pid and pid != "aicode-consumers":
                     raw_accs[target]["managed_project_id"] = pid
                     raw_accs[target]["project_id"] = pid

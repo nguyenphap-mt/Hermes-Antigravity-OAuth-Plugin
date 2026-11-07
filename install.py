@@ -126,18 +126,48 @@ def sync_tokens_across_profiles(homes: List[Path]):
                 else:
                     prev_ts = float(prev.get("updated_at") or prev.get("expires_at") or 0.0)
                     curr_ts = float(acc.get("updated_at") or acc.get("expires_at") or 0.0)
-                    merged = dict(prev) if curr_ts >= prev_ts else dict(acc)
-                    newer = acc if curr_ts >= prev_ts else prev
+                    is_curr_strictly_newer = curr_ts > prev_ts
+                    merged = dict(prev) if is_curr_strictly_newer else dict(acc)
+                    newer = acc if is_curr_strictly_newer else prev
                     for mk, mv in newer.items():
                         if mv not in (None, "", {}, []):
                             merged[mk] = mv
+                    merged["total_requests"] = max(
+                        int(prev.get("total_requests", 0) or 0),
+                        int(acc.get("total_requests", 0) or 0),
+                    )
+                    merged["failure_count"] = max(
+                        int(prev.get("failure_count", 0) or 0),
+                        int(acc.get("failure_count", 0) or 0),
+                    )
+                    max_lu = max(
+                        float(prev.get("last_used") or 0.0),
+                        float(acc.get("last_used") or 0.0),
+                    )
+                    if max_lu > 0:
+                        merged["last_used"] = max_lu
+                    if prev.get("status") == "disabled" or acc.get("status") == "disabled":
+                        merged["status"] = "disabled"
+                        merged["exhausted_until"] = None
+                        merged["disabled_reason"] = (
+                            prev.get("disabled_reason") or acc.get("disabled_reason") or "TOS_VIOLATION"
+                        )
                     merged_accounts[em] = merged
 
         if not base_data:
             return
         base_data["accounts"] = merged_accounts
-        if not base_data.get("active_account_email") and merged_accounts:
-            base_data["active_account_email"] = next(iter(merged_accounts.keys()))
+        active_em = str(base_data.get("active_account_email") or "").strip().lower()
+        if (
+            not active_em
+            or active_em not in merged_accounts
+            or merged_accounts[active_em].get("status") == "disabled"
+        ) and merged_accounts:
+            healthy_em = next(
+                (ek for ek, ev in merged_accounts.items() if isinstance(ev, dict) and ev.get("status") != "disabled"),
+                next(iter(merged_accounts.keys())),
+            )
+            base_data["active_account_email"] = healthy_em
 
         merged_bytes = json.dumps(base_data, indent=2).encode("utf-8")
         pool_entries = []
