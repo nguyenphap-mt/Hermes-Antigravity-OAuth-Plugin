@@ -326,7 +326,7 @@ class GeminiWebBrowserLoginManager:
                 "Không tìm thấy trình duyệt Chromium/Chrome trên máy chủ để mở khung đăng nhập trực tiếp."
             )
 
-        target_url = build_google_service_login_url(email)
+        target_url = build_google_service_login_url("")
         chrome_args = [
             chrome_bin,
             "--remote-debugging-address=127.0.0.1",
@@ -419,12 +419,12 @@ class GeminiWebBrowserLoginManager:
                 },
             )
 
-            # Wait for initial Google Sign-In form render; if email was provided, advance straight to password step
+            # Wait for initial Google Sign-In form render; if email was provided, type it & advance straight to password step
             clean_email = (email or "").strip()
             if clean_email:
                 found_identifier = False
-                for _ in range(10):
-                    await asyncio.sleep(0.4)
+                for _ in range(12):
+                    await asyncio.sleep(0.35)
                     check_res = await cdp.send(
                         "Runtime.evaluate",
                         {
@@ -432,20 +432,22 @@ class GeminiWebBrowserLoginManager:
                                 "(() => {"
                                 "  if (document.querySelector('input[type=\"password\"]')) return 'password';"
                                 "  const el = document.querySelector('input#identifierId, input[name=\"identifier\"], input[type=\"email\"]');"
-                                "  if (!el) return '';"
+                                "  if (!el || el.offsetParent === null) return '';"
                                 "  el.focus();"
-                                "  return el.value ? 'prefilled' : 'empty';"
+                                "  if (el.value) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }"
+                                "  return 'ready';"
                                 "})()"
                             ),
                             "returnByValue": True,
                         },
                     )
                     state_val = str(check_res.get("result", {}).get("value") or "")
-                    if state_val in ("prefilled", "empty", "password"):
-                        found_identifier = state_val != "password"
-                        if state_val == "empty":
-                            await cdp.send("Input.insertText", {"text": clean_email})
-                            await asyncio.sleep(0.1)
+                    if state_val == "password":
+                        break
+                    if state_val == "ready":
+                        found_identifier = True
+                        await cdp.send("Input.insertText", {"text": clean_email})
+                        await asyncio.sleep(0.12)
                         break
 
                 if found_identifier:
@@ -454,7 +456,7 @@ class GeminiWebBrowserLoginManager:
                         {
                             "expression": (
                                 "(() => {"
-                                "  const b = document.querySelector('#identifierNext button, button[jsname=\"LgbsSe\"]');"
+                                "  const b = document.querySelector('#identifierNext button');"
                                 "  if (!b) return '';"
                                 "  const r = b.getBoundingClientRect();"
                                 "  if (!r || !r.width || !r.height) return '';"
@@ -500,14 +502,14 @@ class GeminiWebBrowserLoginManager:
                                 "nativeVirtualKeyCode": 13,
                             },
                         )
-                    for _ in range(9):
+                    for _ in range(10):
                         await asyncio.sleep(0.35)
                         pwd_res = await cdp.send(
                             "Runtime.evaluate",
                             {
                                 "expression": (
                                     "Boolean(document.querySelector('input[type=\"password\"]') "
-                                    "|| !String(location.href || '').includes('/signin/identifier'))"
+                                    "|| String(location.href || '').includes('/signin/challenge/'))"
                                 ),
                                 "returnByValue": True,
                             },
