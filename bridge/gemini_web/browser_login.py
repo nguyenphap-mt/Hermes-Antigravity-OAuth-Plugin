@@ -419,41 +419,103 @@ class GeminiWebBrowserLoginManager:
                 },
             )
 
-            # Wait briefly for initial Google Sign-In form render; if email was pre-filled, advance to password step
-            await asyncio.sleep(2.2)
-            if (email or "").strip():
-                check_res = await cdp.send(
-                    "Runtime.evaluate",
-                    {
-                        "expression": (
-                            "Boolean(document.querySelector('input[type=\"email\"]') "
-                            "&& !document.querySelector('input[type=\"password\"]'))"
-                        ),
-                        "returnByValue": True,
-                    },
-                )
-                if check_res.get("result", {}).get("value") is True:
-                    await cdp.send(
-                        "Input.dispatchKeyEvent",
+            # Wait for initial Google Sign-In form render; if email was provided, advance straight to password step
+            clean_email = (email or "").strip()
+            if clean_email:
+                found_identifier = False
+                for _ in range(10):
+                    await asyncio.sleep(0.4)
+                    check_res = await cdp.send(
+                        "Runtime.evaluate",
                         {
-                            "type": "rawKeyDown",
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
+                            "expression": (
+                                "(() => {"
+                                "  if (document.querySelector('input[type=\"password\"]')) return 'password';"
+                                "  const el = document.querySelector('input#identifierId, input[name=\"identifier\"], input[type=\"email\"]');"
+                                "  if (!el) return '';"
+                                "  el.focus();"
+                                "  return el.value ? 'prefilled' : 'empty';"
+                                "})()"
+                            ),
+                            "returnByValue": True,
                         },
                     )
-                    await cdp.send(
-                        "Input.dispatchKeyEvent",
+                    state_val = str(check_res.get("result", {}).get("value") or "")
+                    if state_val in ("prefilled", "empty", "password"):
+                        found_identifier = state_val != "password"
+                        if state_val == "empty":
+                            await cdp.send("Input.insertText", {"text": clean_email})
+                            await asyncio.sleep(0.1)
+                        break
+
+                if found_identifier:
+                    btn_res = await cdp.send(
+                        "Runtime.evaluate",
                         {
-                            "type": "keyUp",
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
+                            "expression": (
+                                "(() => {"
+                                "  const b = document.querySelector('#identifierNext button, button[jsname=\"LgbsSe\"]');"
+                                "  if (!b) return '';"
+                                "  const r = b.getBoundingClientRect();"
+                                "  if (!r || !r.width || !r.height) return '';"
+                                "  return Math.round(r.left + r.width / 2) + ',' + Math.round(r.top + r.height / 2);"
+                                "})()"
+                            ),
+                            "returnByValue": True,
                         },
                     )
-                    await asyncio.sleep(2.4)
+                    coords = str(btn_res.get("result", {}).get("value") or "").strip()
+                    if re.fullmatch(r"\d+,\d+", coords):
+                        bx_s, by_s = coords.split(",", 1)
+                        bx, by = int(bx_s), int(by_s)
+                        await cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": bx, "y": by})
+                        await cdp.send(
+                            "Input.dispatchMouseEvent",
+                            {"type": "mousePressed", "x": bx, "y": by, "button": "left", "clickCount": 1},
+                        )
+                        await cdp.send(
+                            "Input.dispatchMouseEvent",
+                            {"type": "mouseReleased", "x": bx, "y": by, "button": "left", "clickCount": 1},
+                        )
+                    else:
+                        await cdp.send(
+                            "Input.dispatchKeyEvent",
+                            {
+                                "type": "keyDown",
+                                "key": "Enter",
+                                "code": "Enter",
+                                "text": "\r",
+                                "unmodifiedText": "\r",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13,
+                            },
+                        )
+                        await cdp.send(
+                            "Input.dispatchKeyEvent",
+                            {
+                                "type": "keyUp",
+                                "key": "Enter",
+                                "code": "Enter",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13,
+                            },
+                        )
+                    for _ in range(9):
+                        await asyncio.sleep(0.35)
+                        pwd_res = await cdp.send(
+                            "Runtime.evaluate",
+                            {
+                                "expression": (
+                                    "Boolean(document.querySelector('input[type=\"password\"]') "
+                                    "|| !String(location.href || '').includes('/signin/identifier'))"
+                                ),
+                                "returnByValue": True,
+                            },
+                        )
+                        if pwd_res.get("result", {}).get("value") is True:
+                            break
+            else:
+                await asyncio.sleep(1.8)
 
             return proc, cdp
         except Exception:
@@ -769,28 +831,59 @@ class GeminiWebBrowserLoginManager:
                 if text:
                     await ctx.cdp.send("Input.insertText", {"text": text})
                 if press_enter:
-                    await asyncio.sleep(0.06)
-                    await ctx.cdp.send(
-                        "Input.dispatchKeyEvent",
+                    await asyncio.sleep(0.08)
+                    next_btn_res = await ctx.cdp.send(
+                        "Runtime.evaluate",
                         {
-                            "type": "rawKeyDown",
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
+                            "expression": (
+                                "(() => {"
+                                "  const b = document.querySelector('#passwordNext button, #identifierNext button, #totpNext button, #idvPreregisteredPhoneNext button');"
+                                "  if (!b) return '';"
+                                "  const r = b.getBoundingClientRect();"
+                                "  if (!r || !r.width || !r.height) return '';"
+                                "  return Math.round(r.left + r.width / 2) + ',' + Math.round(r.top + r.height / 2);"
+                                "})()"
+                            ),
+                            "returnByValue": True,
                         },
                     )
-                    await ctx.cdp.send(
-                        "Input.dispatchKeyEvent",
-                        {
-                            "type": "keyUp",
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
-                        },
-                    )
-                settle_sec = 0.45
+                    next_coords = str(next_btn_res.get("result", {}).get("value") or "").strip()
+                    if re.fullmatch(r"\d+,\d+", next_coords):
+                        nx_s, ny_s = next_coords.split(",", 1)
+                        nx, ny = int(nx_s), int(ny_s)
+                        await ctx.cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": nx, "y": ny})
+                        await ctx.cdp.send(
+                            "Input.dispatchMouseEvent",
+                            {"type": "mousePressed", "x": nx, "y": ny, "button": "left", "clickCount": 1},
+                        )
+                        await ctx.cdp.send(
+                            "Input.dispatchMouseEvent",
+                            {"type": "mouseReleased", "x": nx, "y": ny, "button": "left", "clickCount": 1},
+                        )
+                    else:
+                        await ctx.cdp.send(
+                            "Input.dispatchKeyEvent",
+                            {
+                                "type": "keyDown",
+                                "key": "Enter",
+                                "code": "Enter",
+                                "text": "\r",
+                                "unmodifiedText": "\r",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13,
+                            },
+                        )
+                        await ctx.cdp.send(
+                            "Input.dispatchKeyEvent",
+                            {
+                                "type": "keyUp",
+                                "key": "Enter",
+                                "code": "Enter",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13,
+                            },
+                        )
+                settle_sec = 0.85
 
             elif act == "type":
                 if text:
@@ -813,16 +906,17 @@ class GeminiWebBrowserLoginManager:
             elif act == "key":
                 vk, code = KEY_CODE_MAP.get(key, (0, key))
                 if vk:
-                    await ctx.cdp.send(
-                        "Input.dispatchKeyEvent",
-                        {
-                            "type": "rawKeyDown",
-                            "key": key,
-                            "code": code,
-                            "windowsVirtualKeyCode": vk,
-                            "nativeVirtualKeyCode": vk,
-                        },
-                    )
+                    down_payload: Dict[str, Any] = {
+                        "type": "keyDown" if key == "Enter" else "rawKeyDown",
+                        "key": key,
+                        "code": code,
+                        "windowsVirtualKeyCode": vk,
+                        "nativeVirtualKeyCode": vk,
+                    }
+                    if key == "Enter":
+                        down_payload["text"] = "\r"
+                        down_payload["unmodifiedText"] = "\r"
+                    await ctx.cdp.send("Input.dispatchKeyEvent", down_payload)
                     await ctx.cdp.send(
                         "Input.dispatchKeyEvent",
                         {
@@ -834,7 +928,7 @@ class GeminiWebBrowserLoginManager:
                         },
                     )
                     if key == "Enter":
-                        settle_sec = 0.4
+                        settle_sec = 0.65
 
             elif act == "scroll":
                 cx = max(0, min(VIEWPORT_WIDTH, int(round(x or (VIEWPORT_WIDTH / 2)))))
