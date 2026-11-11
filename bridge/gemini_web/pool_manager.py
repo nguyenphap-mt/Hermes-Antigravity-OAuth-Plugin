@@ -11,6 +11,7 @@ Manages `~/.hermes/gemini_web_pool.json` completely independently of the Code As
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import logging
@@ -28,7 +29,12 @@ from .models import (
     resolve_gemini_web_model,
     resolve_web_model_family,
 )
-from .session_manager import GeminiWebSessionManager, get_hermes_dir, parse_flexible_cookie_input
+from .session_manager import (
+    GeminiWebSessionManager,
+    get_hermes_dir,
+    is_synthetic_oauth_cookie,
+    parse_flexible_cookie_input,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +218,20 @@ class GeminiWebPoolManager:
             tier_rank = {"free": 0, "pro": 1, "ultra": 2}
             dirty = False
             for n in nodes:
+                raw_sess = self.session_manager.get_session(n.node_id)
+                if raw_sess:
+                    raw_cks = raw_sess.get("cookies") or {}
+                    if is_synthetic_oauth_cookie(str(raw_cks.get("__Secure-1PSID") or "")) or is_synthetic_oauth_cookie(
+                        str(raw_sess.get("snlm0e") or "")
+                    ):
+                        self.session_manager.delete_session(n.node_id)
+                ck_health = self.session_manager.get_public_cookie_health(n.node_id)
+                if not ck_health.get("is_authentic_web_session"):
+                    if n.status == "ready":
+                        n.status = "unverified"
+                        n.last_error = "Chưa gắn phiên Cookie gemini.google.com thật (Chờ đăng nhập Web)."
+                        dirty = True
+
                 linked = self.session_manager._resolve_linked_google_account(
                     n.node_id, email_hint=n.email or n.linked_oauth_account_id
                 )
@@ -334,6 +354,10 @@ class GeminiWebPoolManager:
 
             cooldown_until = float(node.model_cooldowns.get(fam) or 0.0)
             cooldown_rem = max(0, int(cooldown_until - now_ts)) if cooldown_until > now_ts else 0
+            reset_label = ""
+            if cooldown_rem > 0 and cooldown_until > now_ts:
+                tz_vn = datetime.timezone(datetime.timedelta(hours=7))
+                reset_label = datetime.datetime.fromtimestamp(cooldown_until, tz=tz_vn).strftime("%H:%M")
 
             summary[f"{fam}_1h_count"] = count_1h
             summary[f"{fam}_1h_limit"] = limit_1h
@@ -341,6 +365,8 @@ class GeminiWebPoolManager:
             summary[f"{fam}_24h_limit"] = limit_24h
             summary[f"{fam}_remaining_pct"] = 0.0 if cooldown_rem > 0 else effective_pct
             summary[f"{fam}_cooldown_seconds"] = cooldown_rem
+            summary[f"{fam}_cooldown_until"] = cooldown_until if cooldown_rem > 0 else 0.0
+            summary[f"{fam}_reset_at_label"] = reset_label
 
         return summary
 
@@ -551,9 +577,9 @@ class GeminiWebPoolManager:
                     continue
                 if n.status not in ("ready", "cooldown"):
                     continue
-                # Verify cookie exists
+                # Verify authentic Gemini Web cookie exists
                 ck_health = self.session_manager.get_public_cookie_health(n.node_id)
-                if not ck_health.get("has_1psid"):
+                if not ck_health.get("has_1psid") or not ck_health.get("is_authentic_web_session"):
                     continue
 
                 q_sum = self.compute_node_quota_summary(n, now_ts)
@@ -827,7 +853,10 @@ class GeminiWebPoolManager:
             formatted = [self.format_node_for_dashboard(n) for n in nodes]
             ready_count = sum(
                 1 for item in formatted
-                if item["enabled"] and item["status"] == "ready" and item["cookie_health"].get("has_1psid")
+                if item["enabled"]
+                and item["status"] == "ready"
+                and item["cookie_health"].get("has_1psid")
+                and item["cookie_health"].get("is_authentic_web_session")
             )
             return {
                 "ok": True,

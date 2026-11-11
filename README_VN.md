@@ -6,7 +6,7 @@
 
 > **Bộ giải pháp mở rộng cao cấp cho Hermes Agent**, tích hợp toàn diện hệ thống mô hình AI tiên tiến từ tài khoản **Google Antigravity OAuth** (Gemini 2.5/3.7, Claude 3.5/3.7 Sonnet & Opus, GPT-OSS 120B), **Sinh ảnh AI** (Gemini 3.1 Flash Image) và **Sinh video điện ảnh Google Flow** (Google Veo 3.1 & Omni 1.1 Flash) vào Hermes Agent — hoạt động ổn định trên CLI, Telegram, Discord, TUI và Web Dashboard.
 
-**Phiên bản:** `v3.3.0 (Tháng 11/2026 - Gemini Web App Quota Bridge & Dedicated Web Pool v1.2)`  
+**Phiên bản:** `v3.4.0 (Tháng 11/2026 - Strict Gemini Web Session Auth & Real-Time Quota Reset Sync)`  
 **Tác giả:** Nguyen Phap  
 **Bản quyền:** MIT / Apache 2.0  
 
@@ -86,7 +86,11 @@
 - **Giao diện Quản trị 7 Tab trên Web Dashboard**: Gắn kết tại `/api/plugins/antigravity/` gồm Overview, OAuth Account Pool, Model Catalog & Quotas, Google Flow Video Studio, Image Studio, **Gemini Web App Quota Pool**, và Doctor & Logs.
 
 ### 6. 🌍 Cầu nối Hạn mức Gemini Web App (`gemini.google.com/app`) & Quản trị Web Pool Độc lập (`bridge/gemini_web`)
-- **Khai thác Bể Hạn mức Consumer Web Riêng biệt**: Tận dụng tối đa hạn mức trên `https://gemini.google.com/app` (**Gemini Argon** `gemini-web-argon`, **Gemini 2.5 Pro** `gemini-web-2.5-pro`, **Gemini 2.5 Flash** `gemini-web-2.5-flash`) ngay cả khi tài khoản OAuth Code Assist bị `0%` hoặc bị khóa ToS.
+- **Xác Thực Phiên `gemini.google.com` Chính Chủ 100% (`is_authentic_web_session`)**: Mỗi Node trong bể Gemini Web bắt buộc phải gắn phiên Cookie thực tế từ `https://gemini.google.com/app` (`__Secure-1PSID`, `__Secure-1PSIDTS` và CSRF token `SNlM0e`). Tuyệt đối không dùng chung hay giả lập bằng OAuth token của bể Code Assist (`oauth_linked_*` / `oauth_bridge:*`); các node cũ chưa gắn Cookie Web thật sẽ được giữ nguyên ở trạng thái `CHỜ ĐĂNG NHẬP WEB` (`unverified`) cho đến khi gắn phiên Web chính chủ.
+- **Chuẩn Hóa 2 Luồng Đăng Nhập Gemini Web Trên Dashboard**:
+  1. **Cách 1 (Local Browser Profile)**: Tự động quét và bắt 1-chạm phiên `.google.com` thật từ Browser Profile cục bộ (`Camofox`, `Flow Storage State`, `Gemini Desktop`).
+  2. **Cách 2 (VPS / Điện thoại)**: Dán trực tiếp mảng JSON từ tiện ích `Cookie-Editor`, lệnh `Copy as cURL`, hoặc chuỗi `__Secure-1PSID` + `__Secure-1PSIDTS` từ trình duyệt đã đăng nhập `gemini.google.com/app`.
+- **Đồng Bộ Hạn Mức Thực Tế & Giờ Đặt Lại (`parse_gemini_web_quota_exhaustion`)**: Tự động nhận diện thông báo chạm hạn mức trực tiếp từ `gemini.google.com` (ví dụ: *"Đã đạt đến hạn mức · Đặt lại lúc 21:07"* / *"You've reached your limit · Resets at ..."*), lập tức cập nhật thanh Quota trên Dashboard về `0% (Hết hạn mức • Đặt lại lúc 21:07)` và tự động chuyển hướng (failover) sang Node Web dự phòng tiếp theo.
 - **`GeminiWebPoolManager` Độc lập (`~/.hermes/gemini_web_pool.json`)**: Quản lý các Node Web độc lập (`gweb_*`) có công tắc Bật/Tạm dừng riêng, bộ đếm hạn mức cửa sổ trượt 1h/24h theo từng họ mô hình (`argon`, `pro`, `flash`), tự động chuyển node sớm ở ngưỡng cảnh báo `<= 10%`, và duy trì ngữ cảnh phiên `[cid, rid, rcid]`.
 - **3 Chế độ Định tuyến Linh hoạt**: `hybrid_failover` (Ưu tiên Code Assist $\rightarrow$ tự động chuyển sang Gemini Web khi gặp 429/403), `web_first` (Ưu tiên dùng hạn mức Gemini Web trước để tiết kiệm quota Code Assist), và `isolated` (Chỉ gọi khi chỉ định rõ `gemini-web-*`).
 - **Tương thích 100% Tool-Calling của Hermes Agent (`GeminiWebToolAdapter`)**: Biên dịch hai chiều OpenAI `tools`/`tool_calls` $\leftrightarrow$ `<tool_call>` XML/JSON giúp `AIAgent` thực thi đa lượt các công cụ thực tế của Hermes (`terminal`, `read_file`, `write_file`,...) qua `BardFrontendService/StreamGenerate`.

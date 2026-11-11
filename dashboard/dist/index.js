@@ -199,8 +199,12 @@
     "Round-Robin — Chia đều lượt gọi giữa các Node Web": "Round-Robin — Distribute requests evenly across Web Nodes",
     "Phiên Google / Cookie 1PSID:": "Google Session / 1PSID Cookie:",
     "Thiếu Phiên": "Missing Session",
+    "Chưa gắn phiên gemini.google.com": "No gemini.google.com session attached",
+    "CHỜ ĐĂNG NHẬP WEB": "AWAITING WEB LOGIN",
     "CSRF SNlM0e & Tự xoay 9m:": "CSRF SNlM0e & 9m Auto-Rotate:",
     "Chưa lấy SNlM0e": "SNlM0e Not Fetched",
+    "Chưa lấy SNlM0e (Cần đăng nhập Web)": "SNlM0e Not Fetched (Web Login Required)",
+    "Đăng nhập Gemini Web": "Sign In Gemini Web",
     "4 Argon — Nhiệm vụ phức tạp": "4 Argon — Complex tasks",
     "3.1 Pro / 2.5 Pro — Suy luận nâng cao": "3.1 Pro / 2.5 Pro — Advanced reasoning",
     "Xoay Cookie": "Rotate Cookie",
@@ -209,29 +213,20 @@
     "Chưa có Node nào trong Bể Gemini Web App": "No Nodes in the Gemini Web App Pool Yet",
     "Nhấn 'Đồng Bộ Từ Browser' hoặc '+ Thêm Node Web (Tự Động)' để tự động bắt phiên Google (Email, Gói Pro/Ultra, Cookie & Hạn mức Argon/Pro) chỉ với 1 chạm!": "Click 'Sync From Browser' or '+ Add Web Node (Auto)' to automatically capture Google sessions (Email, Pro/Ultra Tier, Cookies & Argon/Pro Quota) with 1 click!",
     "Bắt Tự Động Từ Browser / Google Pool": "Auto-Capture From Browser / Google Pool",
-    "Kết Nối Tự Động Node Gemini Web App": "Auto-Connect Gemini Web App Node",
-    "Tự động phát hiện Email, Tên hiển thị, Gói Pro/Ultra & CSRF Token (Không cần nhập tay)": "Auto-detects Email, Display Name, Pro/Ultra Tier & CSRF Token (Zero manual typing)",
-    "Cách 1 (Khuyên dùng): Tự Động Bắt 1-Chạm Từ Trình Duyệt & Google Pool": "Option 1 (Recommended): 1-Click Auto-Capture From Browser & Google Pool",
-    "Tự động quét và trích xuất toàn bộ phiên Google đang đăng nhập từ Browser Profile (Camofox / Flow Storage State) và Bể Google OAuth sẵn có trên hệ thống mà không cần nhập bất kỳ thông tin nào.": "Automatically scans and extracts all signed-in Google sessions from Browser Profiles (Camofox / Flow Storage State) and the existing Google OAuth Pool with zero manual input.",
-    "Đang tự động quét & bắt phiên Google...": "Scanning & capturing Google sessions...",
-    "🚀 Bắt Tự Động Từ Browser / Google Pool Ngay": "🚀 Auto-Capture From Browser / Google Pool Now",
-    "Cách 2: Đăng Nhập Tài Khoản Google Mới (Trực Tiếp Trên Điện Thoại / Web)": "Option 2: Sign In With a New Google Account (Directly on Mobile / Web)",
-    "📱 Lưu ý quan trọng khi đăng nhập trên Điện Thoại:": "📱 Important note when signing in on Mobile:",
-    "Khi chọn tài khoản Gmail xong, màn hình điện thoại hiện «Không thể truy cập trang web này — localhost:51121 đã từ chối kết nối» nghĩa là Google ĐÃ CẤP MÃ THÀNH CÔNG!": "After selecting your Gmail account, when your phone shows «This site can't be reached — localhost:51121 refused to connect», it means Google HAS GRANTED THE AUTH CODE SUCCESSFULLY!",
-    "👉 Tại màn hình localhost:51121 đó: Bấm nút [ ⋮ ] (3 chấm góc trên bên phải) → Chọn «Sao chép đường liên kết» (Copy link) → Bấm [ X ] quay lại đây và Dán vào ô dưới (Hệ thống TỰ ĐỘNG KẾT NỐI NGAY khi vừa dán!):": "👉 On that localhost:51121 screen: Tap [ ⋮ ] (top-right menu) → Select «Copy link» → Tap [ X ] to return here and Paste into the box below (Auto-connects immediately on paste!):",
-    "1. Mở Trang Đăng Nhập Google ↗": "1. Open Google Sign-In Page ↗",
-    "Đang tạo link đăng nhập Google...": "Generating Google sign-in link...",
-    "Nhấn Bắt Tự Động để tạo link": "Click Auto-Capture to generate link",
-    "Đã sao chép link đăng nhập Google!": "Copied Google sign-in link!",
-    "Chạm giữ để Dán (Paste) link localhost:51121 vào đây → Tự động kết nối ngay!": "Paste the localhost:51121 link here → Auto-connects immediately!",
-    "2. Xác Nhận & Gắn Node": "2. Confirm & Attach Node",
-    "📋 Tùy chọn nâng cao: Dán nhanh 1 ô (Cookie-Editor JSON / cURL — Tự bóc tách 100%)": "📋 Advanced Option: 1-Box Smart Paste (Cookie-Editor JSON / cURL — 100% Auto-Parsed)",
-    "▲ Thu gọn": "▲ Collapse",
-    "▼ Mở rộng": "▼ Expand",
-    "Chỉ cần dán 1 ô duy nhất (mảng JSON từ Cookie-Editor, lệnh cURL, hoặc storage-state.json). Hệ thống tự động bóc tách Cookie, Email, Tên hiển thị và Gói Pro/Ultra:": "Paste into a single box (Cookie-Editor JSON array, cURL command, or storage-state.json). Automatically extracts Cookies, Email, Display Name, and Pro/Ultra Tier:",
+    "Kết Nối Tự Động Node Gemini Web App": "Connect Authentic Gemini Web App Node",
+    "Tự động phát hiện Email, Tên hiển thị, Gói Pro/Ultra & CSRF Token (Không cần nhập tay)": "Requires an authentic gemini.google.com session (__Secure-1PSID & SNlM0e) for accurate Web quota & inference",
+    "Cách 1: Tự Động Bắt 1-Chạm Từ Browser Profile Cục Bộ": "Method 1: 1-Click Auto-Capture From Local Browser Profiles",
+    "Tự động quét và trích xuất phiên gemini.google.com thật từ Browser Profile trên máy chủ (Camofox / Flow Storage State / Gemini Desktop). Không dùng chung OAuth Code Assist.": "Automatically scans and extracts authentic gemini.google.com cookies from local Browser Profiles (Camofox / Flow Storage State / Gemini Desktop). Strictly separate from Code Assist OAuth.",
+    "Đang tự động quét & bắt phiên gemini.google.com...": "Scanning & capturing gemini.google.com sessions...",
+    "🚀 Quét & Bắt Tự Động Từ Browser Profile": "🚀 Scan & Auto-Capture From Browser Profile",
+    "Cách 2 (Khuyên dùng cho VPS / Điện thoại): Dán Phiên Cookie gemini.google.com Chính Chủ": "Method 2 (Recommended for VPS / Mobile): Paste Authentic gemini.google.com Session Cookie",
+    "Mở gemini.google.com/app trên trình duyệt đã đăng nhập đúng tài khoản → Xuất JSON từ tiện ích Cookie-Editor (hoặc Copy as cURL trong F12 Network, hoặc dán trực tiếp __Secure-1PSID) vào bên dưới:": "Open gemini.google.com/app in your signed-in browser → Export JSON via Cookie-Editor (or Copy as cURL in DevTools Network, or paste __Secure-1PSID) below:",
+    "Email tài khoản (tùy chọn, ví dụ: user@gmail.com)": "Account email (optional, e.g. user@gmail.com)",
+    "Cookie __Secure-1PSID (tùy chọn nếu đã dán JSON/cURL ở dưới)": "__Secure-1PSID cookie (optional if JSON/cURL pasted below)",
+    "Cookie __Secure-1PSIDTS (tùy chọn)": "__Secure-1PSIDTS cookie (optional)",
     "Dán mảng JSON Cookie-Editor, lệnh cURL, hoặc chuỗi Cookie từ gemini.google.com/app...": "Paste Cookie-Editor JSON array, cURL command, or Cookie header from gemini.google.com/app...",
     "Đang phân tích & kết nối...": "Parsing & connecting...",
-    "Tự Động Bóc Tách & Kết Nối": "Auto-Parse & Connect",
+    "Xác Thực & Gắn Phiên Gemini Web": "Verify & Attach Gemini Web Session",
     "Chọn Model Nhánh Web (gemini.google.com/app):": "Select Web Branch Model (gemini.google.com/app):",
     "4 Argon — Nhiệm vụ phức tạp (gemini-web-4-argon)": "4 Argon — Complex tasks (gemini-web-4-argon)",
     "4 Argon • Tư duy Cao / High (gemini-web-4-argon-high)": "4 Argon • High Thinking (gemini-web-4-argon-high)",
@@ -360,7 +355,8 @@
     [/^(\d+\/\d+)\s+NODE SẴN SÀNG$/, "$1 NODES READY"],
     [/^(.*)\s+•\s+Tổng\s+(\d+)\s+tài khoản$/, "$1 • Total $2 accounts"],
     [/^(\d+)%\s+còn lại$/, "$1% remaining"],
-    [/^Còn\s+(\d+)%\s+•\s+1h:\s+(.*)$/, "$1% left • 1h: $2"],
+    [/^Hết hạn mức \(0%\)\s+•\s+Đặt lại lúc\s+(\S+)\s+•\s+1h:\s+(.*)$/, "Quota exhausted (0%) • Resets at $1 • 1h: $2"],
+    [/^Còn\s+(\d+(?:\.\d+)?)%\s+•\s+1h:\s+(.*)$/, "$1% left • 1h: $2"],
     [/^Hợp lệ\s+•\s+Xoay sau\s+(\d+)p$/, "Valid • Rotates in $1m"],
     [/^Nhấp để xem hạn mức Quota chi tiết của\s+(.*)$/, "Click to inspect detailed Quota telemetry for $1"],
     [/^Gói Google AI:\s+(.*)$/, "Google AI Plan: $1"],
@@ -971,14 +967,6 @@
     var showImportModal = showImportModalState[0];
     var setShowImportModal = showImportModalState[1];
 
-    var showAdvancedPasteState = useState(false);
-    var showAdvancedPaste = showAdvancedPasteState[0];
-    var setShowAdvancedPaste = showAdvancedPasteState[1];
-
-    var webOauthState = useState({ loading: false, session_id: "", auth_url: "", callback_url: "" });
-    var webOauth = webOauthState[0];
-    var setWebOauth = webOauthState[1];
-
     var importFormState = useState({
       email: "",
       display_name: "",
@@ -1035,128 +1023,19 @@
       } else {
         setImportForm({ email: "", display_name: "", psid: "", psidts: "", raw_cookie_input: "", node_id: "" });
       }
-      setShowAdvancedPaste(false);
       setShowImportModal(true);
-      setWebOauth({ loading: true, session_id: "", auth_url: "", callback_url: "" });
-      apiFetch("/accounts/login-start", { method: "POST" }).then(function (res) {
-        if (res && res.ok && res.auth_url) {
-          var nextState = {
-            loading: false,
-            session_id: res.session_id,
-            auth_url: res.auth_url,
-            callback_url: "",
-          };
-          setWebOauth(nextState);
-          try { sessionStorage.setItem("ag_pending_gweb_oauth", JSON.stringify(nextState)); } catch (e) {}
-        } else {
-          setWebOauth({ loading: false, session_id: "", auth_url: "", callback_url: "" });
-        }
-      }).catch(function () {
-        setWebOauth({ loading: false, session_id: "", auth_url: "", callback_url: "" });
-      });
     }
-
-    function submitWebOAuthDirect(rawCallbackUrl, explicitSessionId) {
-      var trimmed = (rawCallbackUrl || "").trim();
-      if (!trimmed) {
-        notify("Vui lòng dán đường link kết quả (http://localhost:51121/oauth-callback?code=...) vào ô Bước 2.", "warning");
-        return;
-      }
-      var sid = explicitSessionId != null ? explicitSessionId : (webOauth.session_id || "");
-      setLoading(true);
-      apiFetch("/accounts/login-submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sid,
-          callback_url: trimmed,
-        }),
-      }).then(function (res) {
-        if (res && res.ok) {
-          try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
-          notify(res.message || ("Đã tự động thêm & đồng bộ Node Web: " + (res.email || "")), "success");
-          setShowImportModal(false);
-          fetchWebPool();
-        } else {
-          notify((res && (res.message || res.error)) || "Xác thực Google thất bại.", "error");
-        }
-      }).catch(function (e) {
-        notify("Lỗi xác thực OAuth: " + e.message, "error");
-      }).finally(function () {
-        setLoading(false);
-      });
-    }
-
-    function handleWebOAuthSubmit() {
-      submitWebOAuthDirect(webOauth.callback_url, webOauth.session_id);
-    }
-
-    // Restore pending mobile OAuth modal if page reloaded when returning from Google login
-    useEffect(function () {
-      try {
-        var saved = sessionStorage.getItem("ag_pending_gweb_oauth");
-        if (saved) {
-          var parsed = JSON.parse(saved);
-          if (parsed && parsed.session_id && parsed.auth_url) {
-            setWebOauth(parsed);
-            setShowImportModal(true);
-          }
-        }
-      } catch (e) {}
-    }, []);
-
-    // Poll /accounts/login-poll/{session_id} and check clipboard on return from mobile popup
-    useEffect(function () {
-      if (!showImportModal || !webOauth.session_id) return;
-      var timer = setInterval(function () {
-        apiFetch("/accounts/login-poll/" + encodeURIComponent(webOauth.session_id)).then(function (res) {
-          if (res && res.completed) {
-            try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
-            notify(res.message || ("Đăng nhập Google thành công: " + (res.email || "")), "success");
-            setShowImportModal(false);
-            fetchWebPool();
-          }
-        }).catch(function () {});
-      }, 2000);
-
-      function tryAutoClipboard() {
-        if (navigator.clipboard && navigator.clipboard.readText) {
-          navigator.clipboard.readText().then(function (txt) {
-            if (txt && txt.indexOf("code=") !== -1 && (txt.indexOf("localhost:51121") !== -1 || txt.indexOf("127.0.0.1:51121") !== -1 || txt.indexOf("oauth-callback") !== -1)) {
-              setWebOauth(function (prev) { return Object.assign({}, prev, { callback_url: txt.trim() }); });
-              submitWebOAuthDirect(txt.trim(), webOauth.session_id);
-            }
-          }).catch(function () {});
-        }
-      }
-      window.addEventListener("focus", tryAutoClipboard);
-      return function () {
-        clearInterval(timer);
-        window.removeEventListener("focus", tryAutoClipboard);
-      };
-    }, [showImportModal, webOauth.session_id]);
 
     function handleAutoCaptureHandshake() {
       setLoading(true);
       apiFetch("/gemini-web/handshake/start", { method: "POST" }).then(function (res) {
         if (res && res.ok && res.imported_count > 0) {
-          try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
           notify(res.message || ("Đã tự động bắt " + res.imported_count + " Node Gemini Web!"), "success");
           if (res.pool) setPool(res.pool);
           else fetchWebPool();
           setShowImportModal(false);
-        } else if (res && res.auth_url) {
-          var nextState = {
-            loading: false,
-            session_id: res.session_id || "",
-            auth_url: res.auth_url,
-            callback_url: "",
-          };
-          setWebOauth(nextState);
-          try { sessionStorage.setItem("ag_pending_gweb_oauth", JSON.stringify(nextState)); } catch (e) {}
-          notify("Hãy nhấn '1. Mở Trang Đăng Nhập Google' bên dưới để xác thực tài khoản mới!", "info");
         } else {
-          notify((res && (res.message || res.error)) || "Chưa tìm thấy phiên có sẵn.", "warning");
+          notify((res && (res.message || res.error)) || "Chưa tìm thấy phiên gemini.google.com cục bộ. Vui lòng dán Cookie ở Cách 2 bên dưới.", "warning");
         }
       }).catch(function (e) {
         notify("Lỗi bắt tự động: " + e.message, "error");
@@ -1282,14 +1161,16 @@
       });
     }
 
-    function renderQuotaBar(label, used1h, lim1h, used24h, lim24h, remPct) {
-      var barColor = remPct <= 10 ? "#ef4444" : remPct <= 30 ? "#f59e0b" : "#10b981";
+    function renderQuotaBar(label, used1h, lim1h, used24h, lim24h, remPct, resetAtLabel, cooldownSec) {
+      var isCoolingDown = Boolean((cooldownSec && cooldownSec > 0) || remPct <= 0);
+      var barColor = isCoolingDown || remPct <= 10 ? "#ef4444" : remPct <= 30 ? "#f59e0b" : "#10b981";
+      var rightText = isCoolingDown && resetAtLabel
+        ? ("Hết hạn mức (0%) • Đặt lại lúc " + resetAtLabel + " • 1h: " + used1h + "/" + lim1h + " • 24h: " + used24h + "/" + lim24h)
+        : ("Còn " + remPct + "% • 1h: " + used1h + "/" + lim1h + " • 24h: " + used24h + "/" + lim24h);
       return h("div", { className: "space-y-1", key: label }, [
         h("div", { className: "flex items-center justify-between text-xs" }, [
           h("span", { className: "text-zinc-300 font-semibold" }, label),
-          h("span", { className: "font-mono text-zinc-400" },
-            "Còn " + remPct + "% • 1h: " + used1h + "/" + lim1h + " • 24h: " + used24h + "/" + lim24h
-          ),
+          h("span", { className: "font-mono " + (isCoolingDown ? "text-red-400 font-semibold" : "text-zinc-400") }, rightText),
         ]),
         h("div", {
           style: { width: "100%", height: "6px", background: "#18181b", borderRadius: "9999px", overflow: "hidden" },
@@ -1393,7 +1274,13 @@
             pool.nodes.map(function (node) {
               var q = node.quota_summary || {};
               var ck = node.cookie_health || {};
-              var isReady = node.enabled && node.status === "ready" && ck.has_1psid;
+              var isAuthenticWeb = Boolean(ck.is_authentic_web_session && ck.has_1psid);
+              var isReady = Boolean(node.enabled && node.status === "ready" && isAuthenticWeb);
+              var badgeText = !node.enabled
+                ? "PAUSED"
+                : (!isAuthenticWeb || node.status === "unverified")
+                  ? "CHỜ ĐĂNG NHẬP WEB"
+                  : node.status.toUpperCase();
               return h("div", {
                 key: node.node_id,
                 className: "ag-subcard space-y-3 " + (isReady ? "ag-subcard-active" : !node.enabled ? "ag-subcard-disabled" : ""),
@@ -1415,7 +1302,7 @@
                     }, node.tier_badge || "GOOGLE AI PRO"),
                     h("span", {
                       className: "ag-badge " + (isReady ? "ag-badge-emerald" : "ag-badge-amber"),
-                    }, !node.enabled ? "PAUSED" : node.status.toUpperCase()),
+                    }, badgeText),
                   ]),
                 ]),
 
@@ -1426,8 +1313,8 @@
                 }, [
                   h("div", { className: "flex items-center justify-between" }, [
                     h("span", { className: "text-zinc-400" }, "Phiên Google / Cookie 1PSID:"),
-                    h("span", { className: ck.has_1psid ? "text-emerald-400" : "text-red-400" },
-                      ck.has_1psid ? ("OK (" + (ck.psid_preview || "linked") + ")") : "Thiếu Phiên"
+                    h("span", { className: isAuthenticWeb ? "text-emerald-400" : "text-amber-400" },
+                      isAuthenticWeb ? ("OK (" + (ck.psid_preview || "web") + ")") : "Chưa gắn phiên gemini.google.com"
                     ),
                   ]),
                   h("div", { className: "flex items-center justify-between" }, [
@@ -1435,7 +1322,7 @@
                     h("span", { className: ck.has_snlm0e ? "text-emerald-400" : "text-amber-400" },
                       ck.has_snlm0e
                         ? ("Hợp lệ • Xoay sau " + Math.ceil((ck.seconds_until_next_rotation || 0) / 60) + "p")
-                        : "Chưa lấy SNlM0e"
+                        : "Chưa lấy SNlM0e (Cần đăng nhập Web)"
                     ),
                   ]),
                 ]),
@@ -1458,7 +1345,9 @@
                     q.argon_1h_limit || 40,
                     q.argon_24h_count || 0,
                     q.argon_24h_limit || 200,
-                    q.argon_remaining_pct != null ? q.argon_remaining_pct : 100
+                    q.argon_remaining_pct != null ? q.argon_remaining_pct : 100,
+                    q.argon_reset_at_label || "",
+                    q.argon_cooldown_seconds || 0
                   ),
                   renderQuotaBar(
                     "3.1 Pro / 2.5 Pro — Suy luận nâng cao",
@@ -1466,7 +1355,9 @@
                     q.pro_1h_limit || 50,
                     q.pro_24h_count || 0,
                     q.pro_24h_limit || 300,
-                    q.pro_remaining_pct != null ? q.pro_remaining_pct : 100
+                    q.pro_remaining_pct != null ? q.pro_remaining_pct : 100,
+                    q.pro_reset_at_label || "",
+                    q.pro_cooldown_seconds || 0
                   ),
                   renderQuotaBar(
                     "3.8 Flash / 3.5 Flash-Lite",
@@ -1474,7 +1365,9 @@
                     q.flash_1h_limit || 200,
                     q.flash_24h_count || 0,
                     q.flash_24h_limit || 1500,
-                    q.flash_remaining_pct != null ? q.flash_remaining_pct : 100
+                    q.flash_remaining_pct != null ? q.flash_remaining_pct : 100,
+                    q.flash_reset_at_label || "",
+                    q.flash_cooldown_seconds || 0
                   ),
                 ]),
 
@@ -1488,21 +1381,27 @@
                   style: { borderTop: "1px solid rgba(255,255,255,0.06)" },
                 }, [
                   h("div", { className: "flex flex-wrap items-center gap-1.5" }, [
+                    !isAuthenticWeb && h("button", {
+                      onClick: function () {
+                        openAutoCaptureModal(node);
+                      },
+                      className: "ag-btn ag-btn-primary ag-btn-sm",
+                    }, "Đăng nhập Gemini Web"),
                     h("button", {
                       onClick: function () { handleToggleNode(node.node_id); },
                       className: "ag-btn ag-btn-sm " + (node.enabled ? "ag-btn-secondary" : "ag-btn-primary"),
                     }, node.enabled ? "Tạm dừng" : "Bật lại"),
-                    h("button", {
+                    isAuthenticWeb && h("button", {
                       onClick: function () { handleRotateNode(node.node_id); },
                       className: "ag-btn ag-btn-secondary ag-btn-sm",
                     }, "Xoay Cookie"),
-                    h("button", {
+                    isAuthenticWeb && h("button", {
                       onClick: function () {
                         openAutoCaptureModal(node);
                       },
                       className: "ag-btn ag-btn-secondary ag-btn-sm",
                     }, "Làm mới phiên"),
-                    h("button", {
+                    isAuthenticWeb && h("button", {
                       onClick: function () {
                         setTestModalNode(node);
                         setTestResult(null);
@@ -1537,7 +1436,7 @@
             ]),
           ]),
 
-      // 3. Automatic Node Capture & Google Login Modal (Zero manual 5-field typing)
+      // 3. Authentic Gemini Web Session Capture & Cookie Paste Modal
       showImportModal && h("div", { className: "ag-modal-backdrop", key: "gweb-import-modal" }, [
         h("div", { className: "ag-modal-dialog space-y-4" }, [
           h("div", {
@@ -1559,128 +1458,88 @@
             ]),
             h("button", {
               onClick: function () {
-                try { sessionStorage.removeItem("ag_pending_gweb_oauth"); } catch (e) {}
                 setShowImportModal(false);
               },
               className: "ag-btn ag-btn-secondary ag-btn-sm",
             }, "Đóng"),
           ]),
 
-          // Option 1: 1-Click Auto-Sync from Browser / Camofox / Flow / Google Pool
+          // Flow 1: 1-Click Auto-Sync from Local Browser Profiles
           h("div", { className: "ag-subcard space-y-2.5" }, [
             h("div", { className: "flex items-center justify-between" }, [
               h("span", { className: "text-xs font-bold text-emerald-400" },
-                "Cách 1 (Khuyên dùng): Tự Động Bắt 1-Chạm Từ Trình Duyệt & Google Pool"
+                "Cách 1: Tự Động Bắt 1-Chạm Từ Browser Profile Cục Bộ"
               ),
-              h("span", { className: "ag-badge ag-badge-emerald" }, "AUTO 1-CLICK"),
+              h("span", { className: "ag-badge ag-badge-emerald" }, "LOCAL BROWSER"),
             ]),
             h("p", { className: "text-xs text-zinc-400 leading-relaxed" },
-              "Tự động quét và trích xuất toàn bộ phiên Google đang đăng nhập từ Browser Profile (Camofox / Flow Storage State) và Bể Google OAuth sẵn có trên hệ thống mà không cần nhập bất kỳ thông tin nào."
+              "Tự động quét và trích xuất phiên gemini.google.com thật từ Browser Profile trên máy chủ (Camofox / Flow Storage State / Gemini Desktop). Không dùng chung OAuth Code Assist."
             ),
             h("button", {
               disabled: loading,
               onClick: handleAutoCaptureHandshake,
-              className: "ag-btn ag-btn-primary w-full justify-center",
+              className: "ag-btn ag-btn-secondary w-full justify-center",
             }, [
               h(Icon, { name: "zap", className: "w-4 h-4 " + (loading ? "animate-spin" : "") }),
-              h("span", null, loading ? "Đang tự động quét & bắt phiên Google..." : "🚀 Bắt Tự Động Từ Browser / Google Pool Ngay"),
+              h("span", null, loading ? "Đang tự động quét & bắt phiên gemini.google.com..." : "🚀 Quét & Bắt Tự Động Từ Browser Profile"),
             ]),
           ]),
 
-          // Option 2: Direct Google Login on Mobile / Browser (OAuth PKCE Auto-Link)
-          h("div", { className: "ag-subcard space-y-2.5" }, [
-            h("div", { className: "text-xs font-bold text-cyan-400" },
-              "Cách 2: Đăng Nhập Tài Khoản Google Mới (Trực Tiếp Trên Điện Thoại / Web)"
+          // Flow 2: Direct Paste of Authentic gemini.google.com Session Cookie
+          h("div", { className: "ag-subcard space-y-2.5 text-xs" }, [
+            h("div", { className: "flex items-center justify-between" }, [
+              h("span", { className: "text-xs font-bold text-cyan-400" },
+                "Cách 2 (Khuyên dùng cho VPS / Điện thoại): Dán Phiên Cookie gemini.google.com Chính Chủ"
+              ),
+              h("span", { className: "ag-badge ag-badge-emerald" }, "CHÍNH CHỦ WEB"),
+            ]),
+            h("p", { className: "text-zinc-400 leading-relaxed" },
+              "Mở gemini.google.com/app trên trình duyệt đã đăng nhập đúng tài khoản → Xuất JSON từ tiện ích Cookie-Editor (hoặc Copy as cURL trong F12 Network, hoặc dán trực tiếp __Secure-1PSID) vào bên dưới:"
             ),
-            h("div", {
-              className: "p-2.5 rounded-lg text-xs space-y-1",
-              style: { background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.3)" },
-            }, [
-              h("div", { className: "font-bold text-emerald-400" },
-                "📱 Lưu ý quan trọng khi đăng nhập trên Điện Thoại:"
-              ),
-              h("div", { className: "text-zinc-300 leading-relaxed" },
-                "Khi chọn tài khoản Gmail xong, màn hình điện thoại hiện «Không thể truy cập trang web này — localhost:51121 đã từ chối kết nối» nghĩa là Google ĐÃ CẤP MÃ THÀNH CÔNG!"
-              ),
-              h("div", { className: "text-amber-300 font-semibold leading-relaxed" },
-                "👉 Tại màn hình localhost:51121 đó: Bấm nút [ ⋮ ] (3 chấm góc trên bên phải) → Chọn «Sao chép đường liên kết» (Copy link) → Bấm [ X ] quay lại đây và Dán vào ô dưới (Hệ thống TỰ ĐỘNG KẾT NỐI NGAY khi vừa dán!):"
-              ),
-            ]),
-            h("div", { className: "flex flex-wrap items-center gap-2" }, [
-              webOauth.auth_url
-                ? h("a", {
-                    href: webOauth.auth_url,
-                    target: "_blank",
-                    rel: "noopener noreferrer",
-                    className: "ag-btn ag-btn-primary ag-btn-sm",
-                  }, [
-                    h(Icon, { name: "key", className: "w-3.5 h-3.5" }),
-                    h("span", null, "1. Mở Trang Đăng Nhập Google ↗"),
-                  ])
-                : h("span", { className: "text-xs text-zinc-500" },
-                    webOauth.loading ? "Đang tạo link đăng nhập Google..." : "Nhấn Bắt Tự Động để tạo link"
-                  ),
-              webOauth.auth_url && h("button", {
-                onClick: function () {
-                  if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(webOauth.auth_url).catch(function () {});
-                  }
-                  notify("Đã sao chép link đăng nhập Google!", "info");
-                },
-                className: "ag-btn ag-btn-secondary ag-btn-sm",
-              }, "Copy Link"),
-            ]),
-            h("div", { className: "flex flex-col sm:flex-row gap-2 pt-1" }, [
+            h("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-2" }, [
               h("input", {
                 type: "text",
-                className: "ag-input flex-1 font-mono text-xs",
-                placeholder: "Chạm giữ để Dán (Paste) link localhost:51121 vào đây → Tự động kết nối ngay!",
-                value: webOauth.callback_url,
+                className: "ag-input font-mono text-xs",
+                placeholder: "Email tài khoản (tùy chọn, ví dụ: user@gmail.com)",
+                value: importForm.email,
                 onChange: function (e) {
-                  var val = e.target.value || "";
-                  setWebOauth(Object.assign({}, webOauth, { callback_url: val }));
-                  if (val.indexOf("code=") !== -1 && !loading) {
-                    submitWebOAuthDirect(val, webOauth.session_id);
-                  }
+                  setImportForm(Object.assign({}, importForm, { email: e.target.value }));
                 },
               }),
+              h("input", {
+                type: "text",
+                className: "ag-input font-mono text-xs",
+                placeholder: "Cookie __Secure-1PSID (tùy chọn nếu đã dán JSON/cURL ở dưới)",
+                value: importForm.psid,
+                onChange: function (e) {
+                  setImportForm(Object.assign({}, importForm, { psid: e.target.value }));
+                },
+              }),
+              h("input", {
+                type: "text",
+                className: "ag-input font-mono text-xs",
+                placeholder: "Cookie __Secure-1PSIDTS (tùy chọn)",
+                value: importForm.psidts,
+                onChange: function (e) {
+                  setImportForm(Object.assign({}, importForm, { psidts: e.target.value }));
+                },
+              }),
+            ]),
+            h("textarea", {
+              className: "ag-textarea w-full font-mono",
+              rows: 4,
+              placeholder: "Dán mảng JSON Cookie-Editor, lệnh cURL, hoặc chuỗi Cookie từ gemini.google.com/app...",
+              value: importForm.raw_cookie_input,
+              onChange: function (e) {
+                setImportForm(Object.assign({}, importForm, { raw_cookie_input: e.target.value }));
+              },
+            }),
+            h("div", { className: "flex justify-end" }, [
               h("button", {
                 disabled: loading,
-                onClick: handleWebOAuthSubmit,
+                onClick: handleImportSubmit,
                 className: "ag-btn ag-btn-primary ag-btn-sm",
-              }, loading ? "Đang xác thực..." : "2. Xác Nhận & Gắn Node"),
-            ]),
-          ]),
-
-          // Option 3: Collapsible 1-Box Smart Auto-Parser (Advanced)
-          h("div", { className: "space-y-2" }, [
-            h("button", {
-              onClick: function () { setShowAdvancedPaste(!showAdvancedPaste); },
-              className: "ag-btn ag-btn-secondary ag-btn-sm w-full justify-between",
-            }, [
-              h("span", null, "📋 Tùy chọn nâng cao: Dán nhanh 1 ô (Cookie-Editor JSON / cURL — Tự bóc tách 100%)"),
-              h("span", null, showAdvancedPaste ? "▲ Thu gọn" : "▼ Mở rộng"),
-            ]),
-            showAdvancedPaste && h("div", { className: "ag-subcard space-y-2.5 text-xs" }, [
-              h("p", { className: "text-zinc-400" },
-                "Chỉ cần dán 1 ô duy nhất (mảng JSON từ Cookie-Editor, lệnh cURL, hoặc storage-state.json). Hệ thống tự động bóc tách Cookie, Email, Tên hiển thị và Gói Pro/Ultra:"
-              ),
-              h("textarea", {
-                className: "ag-textarea w-full font-mono",
-                rows: 3,
-                placeholder: "Dán mảng JSON Cookie-Editor, lệnh cURL, hoặc chuỗi Cookie từ gemini.google.com/app...",
-                value: importForm.raw_cookie_input,
-                onChange: function (e) {
-                  setImportForm(Object.assign({}, importForm, { raw_cookie_input: e.target.value }));
-                },
-              }),
-              h("div", { className: "flex justify-end" }, [
-                h("button", {
-                  disabled: loading,
-                  onClick: handleImportSubmit,
-                  className: "ag-btn ag-btn-primary ag-btn-sm",
-                }, loading ? "Đang phân tích & kết nối..." : "Tự Động Bóc Tách & Kết Nối"),
-              ]),
+              }, loading ? "Đang phân tích & kết nối..." : "Xác Thực & Gắn Phiên Gemini Web"),
             ]),
           ]),
         ]),

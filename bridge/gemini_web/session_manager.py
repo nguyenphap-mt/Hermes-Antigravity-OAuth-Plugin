@@ -52,6 +52,26 @@ def _mask_secret(val: str) -> str:
     return f"{val[:6]}...{val[-4:]}"
 
 
+def is_synthetic_oauth_cookie(val: str) -> bool:
+    """Return True if a cookie or CSRF token is a legacy synthetic OAuth placeholder (`oauth_linked_*`, `oauth_bridge:*`)."""
+    v = str(val or "").strip()
+    if not v:
+        return False
+    return v.startswith("oauth_linked") or v.startswith("oauth_bridge:") or v.startswith("oauth_ts_")
+
+
+def _sanitize_parsed_cookies(cookies: Dict[str, str]) -> Dict[str, str]:
+    cleaned: Dict[str, str] = {}
+    for k, v in cookies.items():
+        if not k or v is None:
+            continue
+        val_str = str(v).strip()
+        if not val_str or is_synthetic_oauth_cookie(val_str):
+            continue
+        cleaned[str(k).strip()] = val_str
+    return cleaned
+
+
 def parse_flexible_cookie_input(
     raw_input: str = "",
     psid: str = "",
@@ -66,20 +86,20 @@ def parse_flexible_cookie_input(
     """
     cookies: Dict[str, str] = {}
 
-    if psid and psid.strip():
+    if psid and psid.strip() and not is_synthetic_oauth_cookie(psid):
         cookies["__Secure-1PSID"] = psid.strip()
-    if psidts and psidts.strip():
+    if psidts and psidts.strip() and not is_synthetic_oauth_cookie(psidts):
         cookies["__Secure-1PSIDTS"] = psidts.strip()
 
     text = (raw_input or "").strip()
     if not text:
-        return cookies
+        return _sanitize_parsed_cookies(cookies)
 
     # 1. Try JSON parsing (Cookie-Editor array, Playwright storage-state.json, or dict)
     if (text.startswith("[") and text.endswith("]")) or (text.startswith("{") and text.endswith("}")):
         try:
             parsed = json.loads(text)
-            cookie_list: Optional[List[ Any]] = None
+            cookie_list: Optional[List[Any]] = None
             if isinstance(parsed, list):
                 cookie_list = parsed
             elif isinstance(parsed, dict) and isinstance(parsed.get("cookies"), list):
@@ -92,6 +112,8 @@ def parse_flexible_cookie_input(
                         continue
                     c_name = str(item["name"]).strip()
                     c_val = str(item["value"]).strip()
+                    if is_synthetic_oauth_cookie(c_val):
+                        continue
                     c_domain = str(item.get("domain") or "").strip().lower()
                     if not c_domain or c_domain in (
                         ".google.com",
@@ -106,12 +128,14 @@ def parse_flexible_cookie_input(
                 for k, v in fallback_cookies.items():
                     if k not in cookies:
                         cookies[k] = v
+                cookies = _sanitize_parsed_cookies(cookies)
                 if "__Secure-1PSID" in cookies:
                     return cookies
             elif isinstance(parsed, dict):
                 for k, v in parsed.items():
                     if v is not None and not isinstance(v, (list, dict)):
                         cookies[str(k).strip()] = str(v).strip()
+                cookies = _sanitize_parsed_cookies(cookies)
                 if "__Secure-1PSID" in cookies:
                     return cookies
         except Exception:
@@ -141,10 +165,10 @@ def parse_flexible_cookie_input(
         k, v = chunk.split("=", 1)
         k = k.strip().strip("'\"")
         v = v.strip().strip("'\"")
-        if k:
+        if k and not is_synthetic_oauth_cookie(v):
             cookies[k] = v
 
-    return cookies
+    return _sanitize_parsed_cookies(cookies)
 
 
 class GeminiWebSessionManager:
@@ -246,19 +270,26 @@ class GeminiWebSessionManager:
         psid = str(cookies.get("__Secure-1PSID") or "")
         psidts = str(cookies.get("__Secure-1PSIDTS") or "")
         snlm0e = str(sess.get("snlm0e") or "")
+        is_synthetic = is_synthetic_oauth_cookie(psid) or is_synthetic_oauth_cookie(snlm0e)
+        has_authentic_1psid = bool(psid and not is_synthetic)
+        has_authentic_1psidts = bool(psidts and not is_synthetic and not is_synthetic_oauth_cookie(psidts))
+        has_authentic_snlm0e = bool(snlm0e and not is_synthetic)
         now = time.time()
         last_rot = float(sess.get("last_rotated_at") or 0.0)
         next_rot = float(sess.get("next_rotation_at") or 0.0)
         return {
-            "has_1psid": bool(psid),
-            "has_1psidts": bool(psidts),
-            "has_snlm0e": bool(snlm0e),
-            "psid_preview": _mask_secret(psid),
-            "psidts_preview": _mask_secret(psidts),
-            "snlm0e_preview": _mask_secret(snlm0e),
-            "last_rotated_at": last_rot,
-            "next_rotation_at": next_rot,
-            "seconds_until_next_rotation": max(0, int(next_rot - now)) if next_rot > 0 else 0,
+            "has_1psid": has_authentic_1psid,
+            "has_1psidts": has_authentic_1psidts,
+            "has_snlm0e": has_authentic_snlm0e,
+            "is_authentic_web_session": has_authentic_1psid,
+            "psid_preview": _mask_secret(psid) if has_authentic_1psid else "",
+            "psidts_preview": _mask_secret(psidts) if has_authentic_1psidts else "",
+            "snlm0e_preview": _mask_secret(snlm0e) if has_authentic_snlm0e else "",
+            "last_rotated_at": last_rot if has_authentic_1psid else 0.0,
+            "next_rotation_at": next_rot if has_authentic_1psid else 0.0,
+            "seconds_until_next_rotation": (
+                max(0, int(next_rot - now)) if (has_authentic_1psid and next_rot > 0) else 0
+            ),
             "consecutive_rotate_failures": int(sess.get("consecutive_rotate_failures") or 0),
         }
 
@@ -272,9 +303,9 @@ class GeminiWebSessionManager:
         if not sess:
             return False, f"Session '{node_id}' not found."
         cookies = dict(sess.get("cookies") or {})
-        psid = cookies.get("__Secure-1PSID")
-        if not psid:
-            return False, "Missing __Secure-1PSID cookie."
+        psid = str(cookies.get("__Secure-1PSID") or "")
+        if not psid or is_synthetic_oauth_cookie(psid):
+            return False, "Missing authentic __Secure-1PSID cookie."
 
         headers = {
             "Content-Type": "application/json",
@@ -447,36 +478,19 @@ class GeminiWebSessionManager:
         """Fetch https://gemini.google.com/app to extract SNlM0e, cfb2h, f.sid, email, tier, and models."""
         sess = self.get_session(node_id)
         if not sess:
-            return {"ok": False, "error": f"Session '{node_id}' not found."}
+            return {
+                "ok": False,
+                "status": "unverified",
+                "error": f"Chưa đăng nhập phiên gemini.google.com thật cho node '{node_id}'.",
+            }
 
         cookies = dict(sess.get("cookies") or {})
         psid_val = str(cookies.get("__Secure-1PSID") or "")
-        if not psid_val:
-            return {"ok": False, "error": "Missing __Secure-1PSID cookie."}
-
-        # Fast-path for OAuth-linked bridge sessions when raw web cookies are synthetic
-        if psid_val.startswith("oauth_linked_"):
-            email_hint = psid_val.replace("oauth_linked_", "", 1)
-            linked = self._resolve_linked_google_account(node_id, email_hint=email_hint)
-            resolved_email = (linked["email"] if linked else email_hint).strip().lower()
-            resolved_tier = linked["tier"] if linked else "pro"
-            bridge_token = f"oauth_bridge:{resolved_email}"
-            self.save_session(
-                node_id=node_id,
-                cookies=cookies,
-                snlm0e=bridge_token,
-                cfb2h="boq_assistant-bard-web-server_20260501.08_p0",
-                fsid="oauth_bridge_fsid",
-            )
+        if not psid_val or is_synthetic_oauth_cookie(psid_val):
             return {
-                "ok": True,
-                "status": "ready",
-                "snlm0e": bridge_token,
-                "cfb2h": "boq_assistant-bard-web-server_20260501.08_p0",
-                "fsid": "oauth_bridge_fsid",
-                "email": resolved_email,
-                "detected_tier": resolved_tier,
-                "available_models": _default_node_models_list(),
+                "ok": False,
+                "status": "unverified",
+                "error": "Chưa đăng nhập phiên gemini.google.com thật (cần gắn Cookie __Secure-1PSID).",
             }
 
         headers = {
@@ -528,28 +542,6 @@ class GeminiWebSessionManager:
                         fsid = fsid_match.group(1) if fsid_match else fsid
 
             if not snlm0e:
-                # Fallback: Check if this browser cookie node belongs to an authenticated Google account in hermes_dir
-                linked = self._resolve_linked_google_account(node_id)
-                if linked:
-                    bridge_token = f"oauth_bridge:{linked['email']}"
-                    self.save_session(
-                        node_id=node_id,
-                        cookies=cookies,
-                        snlm0e=bridge_token,
-                        cfb2h=cfb2h,
-                        fsid=fsid or "oauth_bridge_fsid",
-                    )
-                    return {
-                        "ok": True,
-                        "status": "ready",
-                        "snlm0e": bridge_token,
-                        "cfb2h": cfb2h,
-                        "fsid": fsid or "oauth_bridge_fsid",
-                        "email": linked["email"],
-                        "detected_tier": linked["tier"],
-                        "available_models": _default_node_models_list(),
-                    }
-
                 return {
                     "ok": False,
                     "status": "expired",
@@ -661,18 +653,22 @@ class GeminiWebSessionManager:
                 raw_cookie_str = str(data.get("cookie") or data.get("cookies_str") or "")
                 cookies_dict = parse_flexible_cookie_input(raw_cookie_str)
                 if isinstance(data.get("cookies"), dict):
-                    cookies_dict.update({str(k): str(v) for k, v in data["cookies"].items() if v})
+                    cookies_dict.update(
+                        _sanitize_parsed_cookies({str(k): str(v) for k, v in data["cookies"].items() if v})
+                    )
                 elif isinstance(data.get("cookies"), list):
                     parsed_from_state = parse_flexible_cookie_input(raw_text)
                     cookies_dict.update(parsed_from_state)
 
-                if cookies_dict.get("__Secure-1PSID"):
+                if cookies_dict.get("__Secure-1PSID") and not is_synthetic_oauth_cookie(cookies_dict["__Secure-1PSID"]):
                     dedup_key = email or f"psid:{cookies_dict['__Secure-1PSID'][:24]}"
                     if dedup_key not in discovered_by_key:
+                        linked = self._resolve_linked_google_account(email or dedup_key, email_hint=email)
                         discovered_by_key[dedup_key] = {
                             "source": f"browser_state:{jf.name}",
                             "email": email,
                             "display_name": flow_default_name if email == flow_default_email else "",
+                            "detected_tier": (linked.get("tier") if linked else "") or ("pro" if email == flow_default_email and flow_default_email else "pro"),
                             "cookies": cookies_dict,
                         }
             except Exception:
@@ -833,7 +829,7 @@ class GeminiWebSessionManager:
                     except Exception:
                         pass
 
-        # 3. Check authenticated Google OAuth Pool accounts (antigravity_tokens.json)
+        # 3. Enrich tier metadata for already-discovered authentic Web browser sessions if email matches OAuth pool
         for rel in ("auth/antigravity_tokens.json", "antigravity_tokens.json"):
             tf = self.hermes_dir / rel
             if not tf.is_file():
@@ -848,30 +844,17 @@ class GeminiWebSessionManager:
                     if not isinstance(acc, dict):
                         continue
                     em = str(acc.get("email") or "").strip().lower()
-                    if not em:
+                    if not em or em not in discovered_by_key:
                         continue
                     tier_raw = f"{acc.get('tier_id') or ''} {acc.get('plan_name') or ''} {acc.get('plan_type') or ''}".lower()
                     tier = "ultra" if "ultra" in tier_raw else ("pro" if "pro" in tier_raw else "free")
                     tier_label = "Google AI Ultra" if tier == "ultra" else ("Google AI Pro" if tier == "pro" else "Free")
                     disp = f"{em.split('@')[0]} ({tier_label})"
 
-                    if em in discovered_by_key:
-                        discovered_by_key[em]["detected_tier"] = tier
-                        discovered_by_key[em]["linked_oauth_account_id"] = em
-                        if not discovered_by_key[em].get("display_name"):
-                            discovered_by_key[em]["display_name"] = disp
-                    else:
-                        discovered_by_key[em] = {
-                            "source": "antigravity_oauth_pool",
-                            "email": em,
-                            "display_name": disp,
-                            "detected_tier": tier,
-                            "linked_oauth_account_id": em,
-                            "cookies": {
-                                "__Secure-1PSID": f"oauth_linked_{em}",
-                                "__Secure-1PSIDTS": f"oauth_ts_{int(time.time())}",
-                            },
-                        }
+                    discovered_by_key[em]["detected_tier"] = tier
+                    discovered_by_key[em]["linked_oauth_account_id"] = em
+                    if not discovered_by_key[em].get("display_name"):
+                        discovered_by_key[em]["display_name"] = disp
             except Exception:
                 pass
 

@@ -215,5 +215,17 @@ class TestDashboardPluginAPI:
         assert ".ag-lang-switch" in css_content
         assert ".ag-lang-btn-active" in css_content
 
+    def test_gemini_web_ui_strict_web_session_and_no_oauth_pkce_leak(self):
+        """Verify Gemini Web tab enforces authentic gemini.google.com cookies and removes OAuth PKCE localhost:51121 form."""
+        js_bundle = _PLUGIN_DIR / "dashboard" / "dist" / "index.js"
+        js_content = js_bundle.read_text(encoding="utf-8")
+
+        assert "ag_pending_gweb_oauth" not in js_content
+        assert "submitWebOAuthDirect" not in js_content
+        assert "is_authentic_web_session" in js_content
+        assert "CHỜ ĐĂNG NHẬP WEB" in js_content
+        assert "Đặt lại lúc " in js_content
+
+
 
 

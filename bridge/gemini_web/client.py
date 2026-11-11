@@ -10,9 +10,11 @@ Implements:
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import random
+import re
 import time
 import urllib.parse
 import uuid
@@ -22,7 +24,11 @@ import httpx
 
 from .models import build_model_selector_header, resolve_gemini_web_model
 from .pool_manager import GeminiWebNode, GeminiWebPoolManager
-from .session_manager import DEFAULT_USER_AGENT, GeminiWebSessionManager
+from .session_manager import (
+    DEFAULT_USER_AGENT,
+    GeminiWebSessionManager,
+    is_synthetic_oauth_cookie,
+)
 from .tool_adapter import GeminiWebToolAdapter
 
 logger = logging.getLogger(__name__)
@@ -30,6 +36,80 @@ logger = logging.getLogger(__name__)
 STREAM_GENERATE_ENDPOINT = (
     "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
 )
+
+
+def parse_gemini_web_quota_exhaustion(
+    raw_body: str,
+    candidate_text: str = "",
+    rpc_error_code: Optional[int] = None,
+    now_ts: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Detect Gemini Web quota exhaustion banners (e.g. 'Đã đạt đến hạn mức · Đặt lại lúc 21:07') and compute cooldown."""
+    cand_clean = (candidate_text or "").strip()
+    cand_low = cand_clean.lower()
+    raw_low = (raw_body or "").lower()
+
+    quota_markers = (
+        "đã đạt đến hạn mức",
+        "đặt lại lúc",
+        "vượt quá hạn mức",
+        "you've reached your limit",
+        "reached your limit",
+        "resets at",
+    )
+
+    is_cand_quota = bool(cand_clean and len(cand_clean) <= 360 and any(m in cand_low for m in quota_markers))
+    is_raw_quota = bool(not cand_clean and any(m in raw_low for m in quota_markers))
+    is_rpc_quota = bool(not cand_clean and rpc_error_code in {8, 429, 1013})
+
+    if not (is_cand_quota or is_raw_quota or is_rpc_quota):
+        return None
+
+    scan_text = cand_clean if is_cand_quota else (raw_body or "")
+    time_match = re.search(
+        r"(?:đặt lại lúc|resets at|try again at|lúc)\s*(\d{1,2}):(\d{2})(?:\s*(am|pm))?",
+        scan_text,
+        flags=re.IGNORECASE,
+    )
+    if not time_match:
+        time_match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", scan_text, flags=re.IGNORECASE)
+
+    cur_ts = now_ts if now_ts is not None else time.time()
+    tz_vn = datetime.timezone(datetime.timedelta(hours=7))
+    reset_time_label = ""
+    cooldown_seconds = 3600.0
+
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2))
+        ampm = (time_match.group(3) or "").strip().lower()
+        if ampm == "pm" and hour < 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            reset_time_label = f"{hour:02d}:{minute:02d}"
+            now_dt = datetime.datetime.fromtimestamp(cur_ts, tz=tz_vn)
+            target_dt = now_dt.replace(hour=hour, minute=minute, second=5, microsecond=0)
+            if target_dt <= now_dt:
+                target_dt += datetime.timedelta(days=1)
+            cooldown_seconds = max(300.0, float((target_dt - now_dt).total_seconds()))
+
+    reason = (
+        cand_clean
+        if is_cand_quota
+        else (
+            f"Đã đạt đến hạn mức · Đặt lại lúc {reset_time_label}"
+            if reset_time_label
+            else f"Đã đạt đến hạn mức trên gemini.google.com (rpc_error_code={rpc_error_code})"
+        )
+    )
+    return {
+        "exhausted": True,
+        "reset_time_label": reset_time_label,
+        "cooldown_seconds": cooldown_seconds,
+        "reason": reason,
+    }
 
 
 def parse_bard_stream_generate_response(raw_body: str) -> Dict[str, Any]:
@@ -165,6 +245,20 @@ def parse_bard_stream_generate_response(raw_body: str) -> Dict[str, Any]:
                         except Exception:
                             pass
 
+    quota_info = parse_gemini_web_quota_exhaustion(
+        raw_body=raw_body,
+        candidate_text=best_text,
+        rpc_error_code=rpc_error_code,
+    )
+    if quota_info:
+        result["ok"] = False
+        result["quota_exhausted"] = True
+        result["reset_time_label"] = quota_info["reset_time_label"]
+        result["cooldown_seconds"] = quota_info["cooldown_seconds"]
+        result["error_code"] = rpc_error_code or 429
+        result["error"] = quota_info["reason"]
+        return result
+
     if best_text:
         result["ok"] = True
         result["text"] = best_text
@@ -235,7 +329,7 @@ class GeminiWebClient:
             cfb2h = str(sess.get("cfb2h") or "boq_assistant-bard-web-server_20260501.08_p0")
             fsid = str(sess.get("fsid") or "")
 
-            if not snlm0e:
+            if not snlm0e or is_synthetic_oauth_cookie(snlm0e):
                 probe = await self.session_manager.handshake_and_probe_models(node.node_id, http_client=http)
                 if not probe.get("ok"):
                     return {
@@ -246,14 +340,6 @@ class GeminiWebClient:
                 snlm0e = str(sess.get("snlm0e") or "")
                 cfb2h = str(sess.get("cfb2h") or cfb2h)
                 fsid = str(sess.get("fsid") or fsid)
-
-            if snlm0e.startswith("oauth_bridge:"):
-                return await self._generate_via_linked_oauth_account(
-                    node=node,
-                    prompt_text=effective_full_prompt,
-                    model_name=model_name,
-                    http=http,
-                )
 
             cookies = dict(sess.get("cookies") or {})
             user_agent = str(sess.get("user_agent") or DEFAULT_USER_AGENT)
@@ -301,6 +387,8 @@ class GeminiWebClient:
 
             resp = await _do_post(snlm0e, cfb2h, fsid, model_header_val)
             parsed = parse_bard_stream_generate_response(resp.text if resp.status_code == 200 else "")
+            if parsed.get("quota_exhausted"):
+                return parsed
 
             # Self-healing retry: if SNlM0e expired or custom model hex / stale cid was rejected, re-handshake and fallback
             if not parsed.get("ok"):
@@ -313,13 +401,6 @@ class GeminiWebClient:
                 if probe.get("ok"):
                     sess = self.session_manager.get_session(node.node_id) or sess
                     new_snlm0e = str(sess.get("snlm0e") or snlm0e)
-                    if new_snlm0e.startswith("oauth_bridge:"):
-                        return await self._generate_via_linked_oauth_account(
-                            node=node,
-                            prompt_text=effective_full_prompt,
-                            model_name=model_name,
-                            http=http,
-                        )
                     cookies = dict(sess.get("cookies") or {})
                     resp2 = await _do_post(
                         new_snlm0e,
@@ -332,16 +413,6 @@ class GeminiWebClient:
                     if resp2.status_code == 200:
                         parsed = parse_bard_stream_generate_response(resp2.text)
 
-            if not parsed.get("ok") and (node.email or node.linked_oauth_account_id):
-                fallback_res = await self._generate_via_linked_oauth_account(
-                    node=node,
-                    prompt_text=effective_full_prompt,
-                    model_name=model_name,
-                    http=http,
-                )
-                if fallback_res.get("ok"):
-                    return fallback_res
-
             return parsed
         except Exception as e:
             logger.warning("GeminiWebClient.generate_on_node error on %s: %s", node.node_id, e)
@@ -349,231 +420,6 @@ class GeminiWebClient:
         finally:
             if close_client:
                 await http.aclose()
-
-    async def _generate_via_linked_oauth_account(
-        self,
-        node: GeminiWebNode,
-        prompt_text: str,
-        model_name: str,
-        http: httpx.AsyncClient,
-    ) -> Dict[str, Any]:
-        """Execute Gemini inference using the node's linked Google OAuth account when running in OAuth-Bridge mode."""
-        try:
-            try:
-                from tools.antigravity_bridge.auth import AntigravityAuthManager
-                from tools.antigravity_bridge.client import (
-                    CODE_ASSIST_BASE_URL,
-                    DEFAULT_PROJECT_ID,
-                    FALLBACK_CODE_ASSIST_BASE_URL,
-                    build_antigravity_headers,
-                )
-            except ImportError:
-                from ..auth import AntigravityAuthManager
-                from ..client import (
-                    CODE_ASSIST_BASE_URL,
-                    DEFAULT_PROJECT_ID,
-                    FALLBACK_CODE_ASSIST_BASE_URL,
-                    build_antigravity_headers,
-                )
-
-            auth_file = self.session_manager.hermes_dir / "auth" / "antigravity_tokens.json"
-            if not auth_file.is_file():
-                alt_file = self.session_manager.hermes_dir / "antigravity_tokens.json"
-                if alt_file.is_file():
-                    auth_file = alt_file
-
-            auth_mgr = AntigravityAuthManager(auth_file=auth_file) if auth_file.is_file() else AntigravityAuthManager()
-            target_email = (node.email or node.linked_oauth_account_id or "").strip().lower()
-            all_creds = auth_mgr.load_all_stored_credentials()
-            if not all_creds:
-                return {"ok": False, "error": f"No valid OAuth credentials found for linked node '{node.email}'."}
-
-            # Order candidate credentials: target_email first (if not disabled), then other enabled accounts, then disabled as last resort
-            def _cred_tier_rank(c: Any) -> int:
-                t = f"{getattr(c, 'tier_id', '') or ''} {getattr(c, 'plan_name', '') or ''}".lower()
-                return 2 if "ultra" in t else (1 if "pro" in t else 0)
-
-            primary_healthy = [
-                c for c in all_creds
-                if target_email and (c.email or "").strip().lower() == target_email and not getattr(c, "disabled", False)
-            ]
-            other_healthy = sorted(
-                [c for c in all_creds if not getattr(c, "disabled", False) and c not in primary_healthy],
-                key=lambda c: -_cred_tier_rank(c),
-            )
-            fallback_disabled = [
-                c for c in all_creds
-                if c not in primary_healthy and c not in other_healthy
-            ]
-            candidate_creds = primary_healthy + other_healthy + fallback_disabled
-
-            m_low = (model_name or "").strip().lower()
-            if "/" in m_low:
-                m_low = m_low.split("/", 1)[1]
-            if "4-argon-low" in m_low:
-                primary_models = ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"]
-                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
-            elif "4-argon-medium" in m_low:
-                primary_models = ["gemini-4-argon-medium", "gemini-4-argon-high"]
-                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
-            elif "argon" in m_low:
-                primary_models = ["gemini-4-argon-high", "gemini-4-argon-medium"]
-                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
-            elif "3.1-pro-low" in m_low:
-                primary_models = ["gemini-4-argon-low", "gemini-2.5-pro"]
-                fallback_models = ["gemini-3.8-flash-high", "gemini-2.5-flash"]
-            elif "3.1-pro" in m_low:
-                primary_models = ["gemini-4-argon-high", "gemini-2.5-pro"]
-                fallback_models = ["gemini-3.8-flash-high", "gemini-2.5-flash"]
-            elif "2.5-pro" in m_low or "pro" in m_low:
-                primary_models = ["gemini-2.5-pro", "gemini-4-argon-high"]
-                fallback_models = ["gemini-3.8-flash-high", "gemini-2.5-flash"]
-            elif "3.5-flash-lite" in m_low or "flash-lite" in m_low:
-                primary_models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
-                fallback_models = ["gemini-3.8-flash-low", "gemini-2.5-flash"]
-            elif "3.8-flash-low" in m_low:
-                primary_models = ["gemini-3.8-flash-low", "gemini-3.8-flash-medium"]
-                fallback_models = ["gemini-2.5-flash"]
-            elif "3.8-flash-medium" in m_low:
-                primary_models = ["gemini-3.8-flash-medium", "gemini-3.8-flash-high"]
-                fallback_models = ["gemini-2.5-flash"]
-            elif "3.8-flash" in m_low:
-                primary_models = ["gemini-3.8-flash-high", "gemini-3.8-flash-medium"]
-                fallback_models = ["gemini-2.5-flash"]
-            elif "flash" in m_low:
-                primary_models = ["gemini-2.5-flash", "gemini-3.8-flash-low"]
-                fallback_models = ["gemini-3.5-flash-lite"]
-            else:
-                primary_models = ["gemini-4-argon-high"]
-                fallback_models = ["gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-2.5-flash"]
-
-            # Dynamically prepend direct upstream gemini-<suffix> mapping for any newly discovered gemini-web-<suffix>
-            known_tiered_roots = {
-                "gemini-web-default",
-                "gemini-web-argon",
-                "gemini-web-4-argon",
-                "gemini-web-3.1-pro",
-                "gemini-web-3.1-pro-high",
-                "gemini-web-3.1-pro-low",
-                "gemini-web-3.8-flash",
-            }
-            if m_low.startswith("gemini-web-") and m_low not in known_tiered_roots:
-                direct_upstream = "gemini-" + m_low[len("gemini-web-"):]
-                dyn_list: List[str] = [direct_upstream]
-                if not direct_upstream.endswith(("-high", "-medium", "-low", "-lite")):
-                    dyn_list.append(f"{direct_upstream}-high")
-                for dm in reversed(dyn_list):
-                    if dm not in primary_models:
-                        primary_models.insert(0, dm)
-
-            resp = None
-            locked_emails: Set[str] = set()
-            refreshed_cache: Dict[str, Tuple[Any, str]] = {}
-            # Pass 1: Try requested model family (primary_models) across ALL healthy accounts first
-            # Pass 2: Fall back to cross-family models only if no healthy account supports the primary family
-            for model_tier_group in (primary_models, fallback_models):
-                for raw_creds in candidate_creds:
-                    c_email = (getattr(raw_creds, "email", "") or "").strip().lower()
-                    if c_email and c_email in locked_emails:
-                        continue
-                    cache_key = c_email or str(id(raw_creds))
-                    if cache_key in refreshed_cache:
-                        creds, effective_proj = refreshed_cache[cache_key]
-                    else:
-                        creds = raw_creds
-                        if creds.is_expired and creds.refresh_token:
-                            try:
-                                creds = auth_mgr.refresh_access_token(creds)
-                            except Exception:
-                                if c_email:
-                                    locked_emails.add(c_email)
-                                continue
-                        effective_proj = (
-                            getattr(creds, "managed_project_id", None)
-                            or getattr(creds, "project_id", None)
-                            or DEFAULT_PROJECT_ID
-                        )
-                        if not effective_proj or effective_proj == DEFAULT_PROJECT_ID:
-                            resolved_pid = auth_mgr.resolve_project_id(creds)
-                            if resolved_pid:
-                                effective_proj = resolved_pid
-                        refreshed_cache[cache_key] = (creds, effective_proj)
-                    for upstream_model in model_tier_group:
-                        prompt_id = str(uuid.uuid4())
-                        envelope = {
-                            "model": upstream_model,
-                            "project": effective_proj,
-                            "user_prompt_id": prompt_id,
-                            "request": {
-                                "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-                                "generationConfig": {"temperature": 0.4},
-                            },
-                        }
-                        headers = build_antigravity_headers(
-                            creds.access_token,
-                            effective_proj,
-                            prompt_id=prompt_id,
-                            trajectory_id=str(uuid.uuid4()),
-                        )
-                        resp = await http.post(f"{CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-                        if resp.status_code in {429, 500, 502, 503, 504}:
-                            resp = await http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
-                        if resp.status_code == 200:
-                            break
-                        if resp.status_code in {401, 403}:
-                            if c_email:
-                                locked_emails.add(c_email)
-                            break
-                        # If 4-argon-high returns 404 on this account (e.g. gemini-4-argon-disabled), skip other 4-argon tiers on this same account
-                        if resp.status_code == 404 and "4-argon" in upstream_model:
-                            break
-                    if resp is not None and resp.status_code == 200:
-                        break
-                if resp is not None and resp.status_code == 200:
-                    break
-
-            if resp is None or resp.status_code != 200:
-                code = resp.status_code if resp is not None else "None"
-                return {"ok": False, "error": f"Linked Google account returned HTTP {code}"}
-
-            data = resp.json()
-            inner = data.get("response") if isinstance(data.get("response"), dict) else data
-            candidates = inner.get("candidates") or []
-            text_out = ""
-            thoughts_out = ""
-            if candidates and isinstance(candidates[0], dict):
-                parts = (candidates[0].get("content") or {}).get("parts") or []
-                for p in parts:
-                    if not isinstance(p, dict):
-                        continue
-                    if p.get("thought") is True and isinstance(p.get("text"), str):
-                        thoughts_out += p["text"]
-                    elif isinstance(p.get("text"), str):
-                        text_out += p["text"]
-
-            if not text_out and thoughts_out:
-                text_out = thoughts_out
-
-            if not text_out:
-                return {"ok": False, "error": "Empty candidate text from linked Google account."}
-
-            # Stateless REST endpoint (`v1internal:generateContent`) does NOT persist server-side
-            # `[cid, rid, rcid]` context. Never return a fake `cid` so subsequent turns always
-            # compile the full conversation transcript.
-            return {
-                "ok": True,
-                "text": text_out,
-                "thoughts": thoughts_out,
-                "cid": "",
-                "rid": "",
-                "rcid": "",
-                "is_stateful": False,
-                "images": [],
-                "error": None,
-                "error_code": None,
-            }
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
 
     async def create_chat_completion(
         self,
@@ -665,11 +511,12 @@ class GeminiWebClient:
 
             err_str = str(gen_res.get("error") or "Unknown BardFrontendService failure")
             last_error = err_str
+            cooldown_sec = float(gen_res.get("cooldown_seconds") or 900.0)
             self.pool.record_web_usage(node.node_id, canonical_model, success=False, error_msg=err_str)
             self.pool.mark_web_model_cooldown(
                 node.node_id,
                 canonical_model,
-                cooldown_seconds=900.0,
+                cooldown_seconds=cooldown_sec,
                 reason=err_str,
             )
             logger.warning(

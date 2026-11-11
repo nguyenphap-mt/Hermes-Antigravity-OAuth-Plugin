@@ -392,7 +392,7 @@ def test_parse_storage_state_prioritizes_google_com_domain():
     assert parsed["__Secure-1PSIDTS"] == "google_com_psidts_correct"
 
 
-def test_discover_cookies_from_flow_storage_state_and_oauth_pool(tmp_path: Path):
+def test_discover_cookies_from_flow_storage_state_ignores_synthetic_oauth_pool(tmp_path: Path):
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir(parents=True, exist_ok=True)
     (auth_dir / "flow_token.json").write_text(
@@ -432,11 +432,12 @@ def test_discover_cookies_from_flow_storage_state_and_oauth_pool(tmp_path: Path)
     discovered = pool.session_manager.discover_cookies_from_local_browser_profiles(
         include_system_profiles=False
     )
-    assert len(discovered) == 2
+    # Only accounts with authentic browser `.google.com` cookies are discovered; OAuth-only accounts are NOT faked
+    assert len(discovered) == 1
     by_email = {item["email"]: item for item in discovered}
+    assert "thietbibenthanh.data@gmail.com" not in by_email
     assert by_email["lecao043@gmail.com"]["cookies"]["__Secure-1PSID"] == "g.flow_psid_123"
     assert by_email["lecao043@gmail.com"]["detected_tier"] == "pro"
-    assert by_email["thietbibenthanh.data@gmail.com"]["detected_tier"] == "pro"
 
 
 def test_resolve_pkce_session_matches_state_when_session_id_lost_on_mobile(monkeypatch, tmp_path):
@@ -597,89 +598,145 @@ def test_refresh_account_plan_passes_companion_project_and_upgrades_gemini_web_n
 # 6. Multi-Turn Memory Persistence, Turn-Desync Guard & Tool Correlation Tests
 # =============================================================================
 
-def test_oauth_bridge_stateless_never_persists_fake_cid_and_preserves_multiturn_memory(tmp_path: Path):
-    """Verify RC-01 & RC-02: Stateless OAuth-Bridge never stores a fake cid and always sends full transcript."""
+def test_legacy_oauth_linked_nodes_quarantined_as_unverified_until_real_web_cookie_attached(tmp_path: Path):
+    """Verify existing oauth_linked_* nodes stay in pool as 'unverified' (Chờ đăng nhập Web) and cannot route until real Gemini Web cookies are attached."""
     async def _run():
-        auth_dir = tmp_path / "auth"
-        auth_dir.mkdir(parents=True, exist_ok=True)
-        (auth_dir / "antigravity_tokens.json").write_text(
+        # Reject synthetic oauth_linked_* inputs in cookie parser
+        assert parse_flexible_cookie_input("Cookie: __Secure-1PSID=oauth_linked_thietbibenthanh.data@gmail.com") == {}
+        assert parse_flexible_cookie_input("", psid="oauth_bridge:thietbibenthanh.data@gmail.com") == {}
+
+        # Seed a legacy node with synthetic oauth_linked_* session on disk
+        pool_file = tmp_path / "gemini_web_pool.json"
+        pool_file.write_text(
             json.dumps(
                 {
-                    "accounts": [
+                    "config": {"routing_mode": "hybrid_failover"},
+                    "nodes": [
                         {
-                            "email": "stateless.oauth@gmail.com",
-                            "access_token": "ya29.test_stateless_token",
-                            "refresh_token": "1//test_stateless_refresh",
-                            "expires_at": int(time.time()) + 3600,
-                            "project_id": "test-proj-stateless",
-                            "tier_id": "g1-pro-tier",
+                            "node_id": "gweb_thietbibenthanh_data_gmail_com",
+                            "email": "thietbibenthanh.data@gmail.com",
+                            "display_name": "thietbibenthanh.data (Google AI Pro)",
+                            "linked_oauth_account_id": "thietbibenthanh.data@gmail.com",
+                            "enabled": True,
+                            "status": "ready",
+                            "detected_tier": "pro",
                         }
-                    ]
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        sessions_file = tmp_path / "gemini_web_sessions.json"
+        sessions_file.write_text(
+            json.dumps(
+                {
+                    "sessions": {
+                        "gweb_thietbibenthanh_data_gmail_com": {
+                            "node_id": "gweb_thietbibenthanh_data_gmail_com",
+                            "cookies": {
+                                "__Secure-1PSID": "oauth_linked_thietbibenthanh.data@gmail.com",
+                                "__Secure-1PSIDTS": "oauth_ts_12345",
+                            },
+                            "snlm0e": "oauth_bridge:thietbibenthanh.data@gmail.com",
+                        }
+                    }
                 }
             ),
             encoding="utf-8",
         )
 
         pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+        snap = pool.get_dashboard_pool_snapshot()
+        assert snap["total_nodes"] == 1
+        assert snap["ready_nodes"] == 0
+        node_item = snap["nodes"][0]
+        assert node_item["email"] == "thietbibenthanh.data@gmail.com"
+        assert node_item["status"] == "unverified"
+        assert node_item["cookie_health"]["has_1psid"] is False
+        assert node_item["cookie_health"]["is_authentic_web_session"] is False
+        assert pool.select_node_for_model("gemini-web-3.1-pro") is None
+
+        # Now attach a real gemini.google.com cookie session onto the existing node
         await pool.import_or_update_node(
-            psid="oauth_bridge:stateless.oauth@gmail.com",
-            psidts="oauth_linked",
-            email="stateless.oauth@gmail.com",
-            display_name="Stateless OAuth Node",
+            psid="g.a000_REAL_GEMINI_WEB_PSID_TOKEN",
+            psidts="sidts_REAL_GEMINI_WEB_PSIDTS_TOKEN",
+            email="thietbibenthanh.data@gmail.com",
+            node_id="gweb_thietbibenthanh_data_gmail_com",
             verify_immediately=False,
         )
         pool.session_manager.save_session(
-            node_id="gweb_stateless_oauth_gmail_com",
-            cookies={"__Secure-1PSID": "oauth_bridge:stateless.oauth@gmail.com"},
-            snlm0e="oauth_bridge:stateless.oauth@gmail.com",
+            node_id="gweb_thietbibenthanh_data_gmail_com",
+            cookies={
+                "__Secure-1PSID": "g.a000_REAL_GEMINI_WEB_PSID_TOKEN",
+                "__Secure-1PSIDTS": "sidts_REAL_GEMINI_WEB_PSIDTS_TOKEN",
+            },
+            snlm0e="SNlM0e_REAL_WEB_CSRF_999",
         )
 
-        sent_prompts = []
+        snap_after = pool.get_dashboard_pool_snapshot()
+        assert snap_after["ready_nodes"] == 1
+        node_after = snap_after["nodes"][0]
+        assert node_after["status"] == "ready"
+        assert node_after["cookie_health"]["has_1psid"] is True
+        assert node_after["cookie_health"]["is_authentic_web_session"] is True
+        chosen = pool.select_node_for_model("gemini-web-3.1-pro")
+        assert chosen is not None
+        assert chosen.node_id == "gweb_thietbibenthanh_data_gmail_com"
 
-        async def _fake_post(url: str, json: dict = None, **kwargs):
-            prompt_sent = ""
-            if isinstance(json, dict):
-                contents = ((json.get("request") or {}).get("contents") or [{}])[0]
-                parts = contents.get("parts") or [{}]
-                prompt_sent = str(parts[0].get("text") or "")
-            sent_prompts.append(prompt_sent)
+    asyncio.run(_run())
 
+
+def test_gemini_web_quota_exhaustion_banner_syncs_reset_time_to_dashboard(tmp_path: Path):
+    """Verify 'Đã đạt đến hạn mức · Đặt lại lúc 21:07' from gemini.google.com sets 0% remaining and exact reset time on Dashboard."""
+    async def _run():
+        import datetime
+
+        pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+        await pool.import_or_update_node(
+            psid="g.a000_REAL_PRO_PSID_1",
+            psidts="sidts_REAL_PRO_1",
+            email="thietbibenthanh.data@gmail.com",
+            display_name="thietbibenthanh.data (Google AI Pro)",
+            verify_immediately=False,
+        )
+        pool.session_manager.save_session(
+            node_id="gweb_thietbibenthanh_data_gmail_com",
+            cookies={"__Secure-1PSID": "g.a000_REAL_PRO_PSID_1", "__Secure-1PSIDTS": "sidts_REAL_PRO_1"},
+            snlm0e="SNlM0e_REAL_1",
+        )
+
+        async def _fake_quota_exhausted_post(url: str, **kwargs):
             resp = MagicMock()
             resp.status_code = 200
-            if len(sent_prompts) == 1:
-                text = "Tôi đã ghi nhớ mã dự án là PROJECT_PHOENIX_999."
-            else:
-                text = (
-                    "Mã dự án bạn vừa nói ở lượt 1 là PROJECT_PHOENIX_999."
-                    if "PROJECT_PHOENIX_999" in prompt_sent
-                    else "Tôi không nhớ lượt trước."
-                )
-            resp.json.return_value = {
-                "response": {"candidates": [{"content": {"parts": [{"text": text}]}}]}
-            }
+            # Simulate Gemini Web returning the Vietnamese quota banner
+            resp.text = _make_bard_rpc_response(
+                text="Đã đạt đến hạn mức · Đặt lại lúc 21:07",
+                cid="",
+                rid="",
+                rcid="",
+            )
             return resp
 
         mock_http = MagicMock()
-        mock_http.post = _fake_post
+        mock_http.post = _fake_quota_exhausted_post
         gweb_client = GeminiWebClient(pool_manager=pool, http_client=mock_http)
 
-        messages = [
-            {"role": "system", "content": "Always remember user facts."},
-            {"role": "user", "content": "Hãy nhớ mã dự án của tôi là PROJECT_PHOENIX_999."},
-        ]
-        res1 = await gweb_client.create_chat_completion({"model": "gemini-web-argon", "messages": messages})
-        messages.append(res1["choices"][0]["message"])
-        messages.append({"role": "user", "content": "Mã dự án của tôi là gì?"})
+        with pytest.raises(RuntimeError) as exc_info:
+            await gweb_client.create_chat_completion(
+                {
+                    "model": "gemini-web-3.1-pro",
+                    "messages": [{"role": "user", "content": "Vẽ sơ đồ tủ điện công nghiệp"}],
+                }
+            )
+        assert "21:07" in str(exc_info.value) or "hạn mức" in str(exc_info.value).lower()
 
-        res2 = await gweb_client.create_chat_completion({"model": "gemini-web-argon", "messages": messages})
-        assert "PROJECT_PHOENIX_999" in res2["choices"][0]["message"]["content"]
-        assert len(sent_prompts) == 2
-        assert "[SYSTEM_INSTRUCTION]" in sent_prompts[1]
-        assert "PROJECT_PHOENIX_999" in sent_prompts[1]
-        assert pool.get_conversation_context(
-            pool.compute_session_key({"messages": messages}),
-            "gweb_stateless_oauth_gmail_com",
-        ) is None
+        snap = pool.get_dashboard_pool_snapshot()
+        node_info = snap["nodes"][0]
+        q_sum = node_info["quota_summary"]
+        assert q_sum["pro_remaining_pct"] == 0.0
+        assert q_sum["pro_cooldown_seconds"] > 0
+        assert q_sum["pro_reset_at_label"] == "21:07"
+        assert "21:07" in node_info["last_error"]
 
     asyncio.run(_run())
 

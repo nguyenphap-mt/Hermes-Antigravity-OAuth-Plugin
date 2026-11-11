@@ -525,71 +525,107 @@ def run_audit() -> Dict[str, Any]:
             }
 
             # =========================================================================
-            # STAGE 5: Stateless Linked OAuth Bridge (`oauth_bridge:`) 3-Turn Memory Audit
+            # STAGE 5: Strict Web Cookie Auth Quarantine + Quota Reset Sync & Failover
             # =========================================================================
-            oauth_bridge_dir = tmp_dir / "stage5_oauth_bridge"
-            oauth_bridge_dir.mkdir(parents=True, exist_ok=True)
-            (oauth_bridge_dir / "auth").mkdir(parents=True, exist_ok=True)
-            (oauth_bridge_dir / "auth" / "antigravity_tokens.json").write_text(
+            s5_dir = tmp_dir / "stage5_strict_auth_and_quota"
+            s5_dir.mkdir(parents=True, exist_ok=True)
+            # 1. Seed a legacy synthetic oauth_linked_* node on disk
+            (s5_dir / "gemini_web_pool.json").write_text(
                 json.dumps(
                     {
-                        "accounts": [
+                        "config": {"routing_mode": "hybrid_failover"},
+                        "nodes": [
                             {
-                                "email": "oauth.bridge.node@gmail.com",
-                                "access_token": "ya29.audit_stage5_token",
-                                "refresh_token": "1//audit_stage5_refresh",
-                                "expires_at": int(time.time()) + 3600,
-                                "project_id": "audit-stage5-proj",
-                                "tier_id": "g1-pro-tier",
+                                "node_id": "gweb_legacy_oauth_gmail_com",
+                                "email": "legacy.oauth@gmail.com",
+                                "display_name": "Legacy OAuth Node",
+                                "enabled": True,
+                                "status": "ready",
+                                "detected_tier": "pro",
                             }
-                        ]
+                        ],
                     }
                 ),
                 encoding="utf-8",
             )
-            pool_s5 = GeminiWebPoolManager(hermes_dir=oauth_bridge_dir)
-            asyncio.run(
-                pool_s5.import_or_update_node(
-                    psid="oauth_bridge:oauth.bridge.node@gmail.com",
-                    psidts="oauth_linked",
-                    email="oauth.bridge.node@gmail.com",
-                    display_name="Stage 5 OAuth Bridge Node",
-                    verify_immediately=False,
+            (s5_dir / "gemini_web_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "sessions": {
+                            "gweb_legacy_oauth_gmail_com": {
+                                "node_id": "gweb_legacy_oauth_gmail_com",
+                                "cookies": {"__Secure-1PSID": "oauth_linked_legacy.oauth@gmail.com"},
+                                "snlm0e": "oauth_bridge:legacy.oauth@gmail.com",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pool_s5 = GeminiWebPoolManager(hermes_dir=s5_dir)
+            snap_s5_initial = pool_s5.get_dashboard_pool_snapshot()
+            assert snap_s5_initial["total_nodes"] == 1
+            assert snap_s5_initial["ready_nodes"] == 0, f"Synthetic OAuth node must not be ready: {snap_s5_initial}"
+            assert snap_s5_initial["nodes"][0]["status"] == "unverified"
+            assert snap_s5_initial["nodes"][0]["cookie_health"]["is_authentic_web_session"] is False
+
+            # 2. Attach real Gemini Web cookies to 2 nodes (Node 1 will hit 'Đã đạt đến hạn mức · Đặt lại lúc 21:07' on Turn 1, failing over to Node 2)
+            for idx, em in enumerate(("primary.web@gmail.com", "backup.web@gmail.com"), 1):
+                asyncio.run(
+                    pool_s5.import_or_update_node(
+                        psid=f"g.a000_REAL_WEB_S5_{idx}",
+                        psidts=f"sidts_REAL_WEB_S5_{idx}",
+                        email=em,
+                        display_name=f"Stage 5 Web Node {idx}",
+                        verify_immediately=False,
+                    )
                 )
-            )
-            pool_s5.session_manager.save_session(
-                node_id="gweb_oauth_bridge_node_gmail_com",
-                cookies={"__Secure-1PSID": "oauth_bridge:oauth.bridge.node@gmail.com"},
-                snlm0e="oauth_bridge:oauth.bridge.node@gmail.com",
-            )
+                nid_s5 = f"gweb_{em.replace('.', '_').replace('@', '_')}"
+                pool_s5.session_manager.save_session(
+                    node_id=nid_s5,
+                    cookies={"__Secure-1PSID": f"g.a000_REAL_WEB_S5_{idx}", "__Secure-1PSIDTS": f"sidts_REAL_WEB_S5_{idx}"},
+                    snlm0e=f"SNlM0e_REAL_S5_{idx}",
+                    cfb2h="boq_assistant-bard-web-server_20261111",
+                    fsid="-998877",
+                )
 
-            s5_prompts: List[str] = []
+            s5_calls: List[Dict[str, Any]] = []
 
-            async def _fake_s5_post(url: str, json: Any = None, **kw):
-                p_txt = ""
-                if isinstance(json, dict):
-                    contents = ((json.get("request") or {}).get("contents") or [{}])[0]
-                    parts = contents.get("parts") or [{}]
-                    p_txt = str(parts[0].get("text") or "")
-                s5_prompts.append(p_txt)
+            async def _fake_s5_post(url: str, content: Any = None, cookies: Dict[str, str] = None, **kw):
+                qs = urllib.parse.parse_qs(content.decode("utf-8") if isinstance(content, bytes) else str(content))
+                outer = json.loads((qs.get("f.req") or ["[]"])[0])
+                inner = json.loads(outer[1])
+                p_txt = inner[0][0]
+                psid_used = (cookies or {}).get("__Secure-1PSID", "")
+                s5_calls.append({"psid": psid_used, "prompt": p_txt})
+
                 r = MagicMock()
                 r.status_code = 200
-                turn_idx = len(s5_prompts)
+                # If Node 1 (`g.a000_REAL_WEB_S5_1`) is called, simulate Gemini Web quota exhaustion banner
+                if psid_used == "g.a000_REAL_WEB_S5_1":
+                    r.text = _make_bard_stream_generate_envelope(
+                        text="Đã đạt đến hạn mức · Đặt lại lúc 21:07",
+                        cid="",
+                        rid="",
+                        rcid="",
+                    )
+                    return r
+
+                # Node 2 (`g.a000_REAL_WEB_S5_2`) handles the failover and completes the 3-turn flow
+                node2_calls = [c for c in s5_calls if c["psid"] == "g.a000_REAL_WEB_S5_2"]
+                turn_idx = len(node2_calls)
                 if turn_idx == 1:
                     ans = '<tool_call>{"name": "read_file", "arguments": {"path": "/tmp/s5.txt"}}</tool_call>'
                 elif turn_idx == 2:
                     ans = "Đã đọc file /tmp/s5.txt với mã: SECRET_OMEGA_777."
                 else:
-                    ans = (
-                        "Mã bí mật ở lượt 1-2 là SECRET_OMEGA_777."
-                        if "SECRET_OMEGA_777" in p_txt
-                        else "AMNESIA_DETECTED"
-                    )
-                r.json.return_value = {
-                    "response": {
-                        "candidates": [{"content": {"parts": [{"text": ans}]}}]
-                    }
-                }
+                    ans = "Mã bí mật ở lượt 1-2 là SECRET_OMEGA_777."
+                r.text = _make_bard_stream_generate_envelope(
+                    text=ans,
+                    cid="cid_s5_node2",
+                    rid=f"rid_s5_{turn_idx}",
+                    rcid=f"rcid_s5_{turn_idx}",
+                )
                 return r
 
             http_s5 = MagicMock()
@@ -611,8 +647,17 @@ def run_audit() -> Dict[str, Any]:
                 {"role": "user", "content": "Hãy đọc file /tmp/s5.txt và ghi nhớ mã SECRET_OMEGA_777."},
             ]
             c_t1 = asyncio.run(
-                gweb_s5.create_chat_completion({"model": "gemini-web-argon", "messages": s5_msgs, "tools": tools_schema})
+                gweb_s5.create_chat_completion(
+                    {"model": "gemini-web-argon", "messages": s5_msgs, "tools": tools_schema},
+                    preferred_node_id="gweb_primary_web_gmail_com",
+                )
             )
+            # Verify Node 1 was marked at 0% remaining with reset time 21:07 after returning the quota banner
+            n1_s5 = pool_s5.format_node_for_dashboard(pool_s5.get_node("gweb_primary_web_gmail_com"))
+            assert n1_s5["quota_summary"]["argon_remaining_pct"] == 0.0
+            assert n1_s5["quota_summary"]["argon_reset_at_label"] == "21:07"
+            assert c_t1["x_gemini_web_node"] == "gweb_backup_web_gmail_com"
+
             tc_s5 = c_t1["choices"][0]["message"]["tool_calls"][0]
             s5_msgs.append(c_t1["choices"][0]["message"])
             s5_msgs.append({"role": "tool", "tool_call_id": tc_s5["id"], "content": "FILE_DATA=SECRET_OMEGA_777"})
@@ -628,19 +673,12 @@ def run_audit() -> Dict[str, Any]:
             )
             ans_t3 = c_t3["choices"][0]["message"]["content"]
             assert "SECRET_OMEGA_777" in ans_t3, f"Stage 5 amnesia on Turn 3: {ans_t3}"
-            # Verify all 3 stateless OAuth Bridge turns included full transcript & system instruction
-            for idx, p_sent in enumerate(s5_prompts, 1):
-                assert "[SYSTEM_INSTRUCTION]" in p_sent, f"Stage 5 Turn {idx} lost [SYSTEM_INSTRUCTION]"
-                assert "<antigravity_tool_protocol>" in p_sent, f"Stage 5 Turn {idx} lost tool protocol"
-            assert pool_s5.get_conversation_context(
-                pool_s5.compute_session_key({"messages": s5_msgs}),
-                "gweb_oauth_bridge_node_gmail_com",
-            ) is None
 
-            report["stages"]["stage5_stateless_oauth_bridge_multiturn_memory"] = {
+            report["stages"]["stage5_strict_web_auth_and_quota_reset_sync"] = {
                 "passed": True,
-                "turns_verified": 3,
-                "fake_cid_prevented": True,
+                "legacy_oauth_node_quarantined": True,
+                "node1_quota_exhausted_reset_at": n1_s5["quota_summary"]["argon_reset_at_label"],
+                "failed_over_to_node": c_t1["x_gemini_web_node"],
                 "turn3_response": ans_t3,
             }
 

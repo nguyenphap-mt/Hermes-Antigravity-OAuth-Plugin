@@ -285,9 +285,11 @@ class TestModelDiscovery:
             prompt_id=prompt_id,
             trajectory_id=traj_id,
         )
-        assert headers["User-Agent"].startswith("antigravity/2.23.1 (aidev_client; os_type=")
-        assert "cl=998881661" in headers["User-Agent"]
-        assert headers["X-Goog-Api-Client"] == "gl-go/1.24.0 gccl/2.23.1 antigravity/2.23.1"
+        ver, _, _ = AntigravityFingerprint.get_version_info()
+        cl = AntigravityFingerprint.get_changelist()
+        assert headers["User-Agent"].startswith(f"antigravity/{ver} (aidev_client; os_type=")
+        assert f"cl={cl}" in headers["User-Agent"]
+        assert headers["X-Goog-Api-Client"] == f"gl-go/1.24.0 gccl/{ver} antigravity/{ver}"
         assert headers["Accept-Encoding"] == "gzip"
         assert "Client-Metadata" in headers
         assert "x-activity-request-id" in headers

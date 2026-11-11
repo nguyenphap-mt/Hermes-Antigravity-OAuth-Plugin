@@ -742,11 +742,6 @@ def _complete_pkce_and_sync_sync(session: Dict[str, Any], callback_or_code: str)
         pool.refresh_account_plan_and_quota(acc.email)
     except Exception:
         pass
-    try:
-        gweb_pool = _get_gemini_web_pool()
-        asyncio.run(_auto_sync_gemini_web_pool(gweb_pool))
-    except Exception:
-        pass
 
     session["completed"] = True
     session["email"] = acc.email
@@ -758,7 +753,7 @@ def _complete_pkce_and_sync_sync(session: Dict[str, Any], callback_or_code: str)
         "ok": True,
         "email": acc.email,
         "project_id": creds.project_id,
-        "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể OAuth + Gemini Web: {acc.email}",
+        "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể OAuth: {acc.email}",
     }
 
 
@@ -870,17 +865,12 @@ async def submit_oauth_login(req: AccountLoginSubmitRequest):
             "ok": True,
             "email": session["email"],
             "project_id": session.get("project_id") or "",
-            "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể Gemini Web: {session['email']}",
+            "message": f"Đăng nhập Google thành công & đã tự động gắn vào Bể OAuth: {session['email']}",
         }
 
     loop = asyncio.get_event_loop()
     try:
         res = await loop.run_in_executor(None, _complete_pkce_and_sync_sync, session, req.callback_url)
-        try:
-            gweb_pool = _get_gemini_web_pool()
-            await _auto_sync_gemini_web_pool(gweb_pool)
-        except Exception:
-            pass
         return res
     except Exception as e:
         logger.error(f"OAuth login-submit failed: {e}")
@@ -1588,7 +1578,7 @@ async def import_gemini_web_node(req: GeminiWebNodeImportRequest):
 
 @router.post("/gemini-web/nodes/sync-browser")
 async def sync_gemini_web_nodes_from_browser():
-    """Auto-discover and import `.google.com` cookies & Google sessions from Browser/Camofox/Flow/OAuth Pool."""
+    """Auto-discover and import authentic `.google.com` cookies from local Browser/Camofox/Flow/Gemini Desktop profiles."""
     try:
         pool = _get_gemini_web_pool()
         imported_nodes = await _auto_sync_gemini_web_pool(pool)
@@ -1596,7 +1586,7 @@ async def sync_gemini_web_nodes_from_browser():
             return {
                 "ok": False,
                 "imported_count": 0,
-                "message": "Chưa tìm thấy phiên Google nào trong Browser Profile hoặc OAuth Pool. Hãy bấm '+ Thêm Node Web (Tự Động)' để đăng nhập Google 1-Chạm!",
+                "message": "Chưa tìm thấy phiên Cookie gemini.google.com thật trong Browser Profile cục bộ. Vui lòng dán Cookie (__Secure-1PSID / JSON Cookie-Editor / cURL) từ trình duyệt đã đăng nhập gemini.google.com/app.",
             }
 
         emails_str = ", ".join(
@@ -1617,8 +1607,7 @@ async def sync_gemini_web_nodes_from_browser():
 @router.post("/gemini-web/handshake/start")
 async def start_gemini_web_auto_handshake():
     """1-Click Automatic Session Capture for Gemini Web App:
-    1. Immediately scans & imports existing Browser / Camofox / Flow / Google OAuth sessions.
-    2. If running on Desktop with GUI display and no nodes exist yet, launches Playwright to gemini.google.com/app.
+    Scans & imports existing authentic Browser / Camofox / Flow / Gemini Desktop `.google.com` sessions.
     """
     try:
         pool = _get_gemini_web_pool()
@@ -1632,7 +1621,7 @@ async def start_gemini_web_auto_handshake():
                 "status": "completed",
                 "imported_count": len(imported_nodes),
                 "emails": emails,
-                "message": f"Đã tự động bắt thành công {len(imported_nodes)} phiên Google ({', '.join(emails[:4])})!",
+                "message": f"Đã tự động bắt thành công {len(imported_nodes)} phiên gemini.google.com ({', '.join(emails[:4])})!",
             }
             return {
                 "ok": True,
@@ -1644,20 +1633,13 @@ async def start_gemini_web_auto_handshake():
                 "message": _GWEB_HANDSHAKE_SESSIONS[session_id]["message"],
             }
 
-        # No existing local profiles found; return auth_url for 1-click Google OAuth login
-        _load_pkce_sessions()
-        _ensure_local_oauth_callback_listener()
-        auth_mgr = _get_ag_auth_manager()
-        pkce = auth_mgr.create_pkce_auth_session()
-        _PKCE_SESSIONS[pkce["session_id"]] = pkce
-        _save_pkce_sessions()
         return {
             "ok": True,
-            "session_id": pkce["session_id"],
-            "status": "oauth_ready",
-            "auth_url": pkce["auth_url"],
-            "redirect_uri": pkce["redirect_uri"],
-            "message": "Mở liên kết đăng nhập Google để tự động gắn Node vào bể Gemini Web.",
+            "session_id": session_id,
+            "status": "cookie_input_required",
+            "imported_count": 0,
+            "pool": pool.get_dashboard_pool_snapshot(),
+            "message": "Chưa tìm thấy phiên gemini.google.com trong Browser Profile cục bộ. Vui lòng dán Cookie (__Secure-1PSID / JSON Cookie-Editor / cURL) từ trình duyệt đã đăng nhập gemini.google.com/app.",
         }
     except Exception as e:
         return {"ok": False, "error": str(e), "message": f"Lỗi khởi tạo bắt tự động: {e}"}
