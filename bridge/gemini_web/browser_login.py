@@ -419,106 +419,8 @@ class GeminiWebBrowserLoginManager:
                 },
             )
 
-            # Wait for initial Google Sign-In form render; if email was provided, type it & advance straight to password step
-            clean_email = (email or "").strip()
-            if clean_email:
-                found_identifier = False
-                for _ in range(12):
-                    await asyncio.sleep(0.35)
-                    check_res = await cdp.send(
-                        "Runtime.evaluate",
-                        {
-                            "expression": (
-                                "(() => {"
-                                "  if (document.querySelector('input[type=\"password\"]')) return 'password';"
-                                "  const el = document.querySelector('input#identifierId, input[name=\"identifier\"], input[type=\"email\"]');"
-                                "  if (!el || el.offsetParent === null) return '';"
-                                "  el.focus();"
-                                "  if (el.value) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }"
-                                "  return 'ready';"
-                                "})()"
-                            ),
-                            "returnByValue": True,
-                        },
-                    )
-                    state_val = str(check_res.get("result", {}).get("value") or "")
-                    if state_val == "password":
-                        break
-                    if state_val == "ready":
-                        found_identifier = True
-                        await cdp.send("Input.insertText", {"text": clean_email})
-                        await asyncio.sleep(0.12)
-                        break
-
-                if found_identifier:
-                    btn_res = await cdp.send(
-                        "Runtime.evaluate",
-                        {
-                            "expression": (
-                                "(() => {"
-                                "  const b = document.querySelector('#identifierNext button');"
-                                "  if (!b) return '';"
-                                "  const r = b.getBoundingClientRect();"
-                                "  if (!r || !r.width || !r.height) return '';"
-                                "  return Math.round(r.left + r.width / 2) + ',' + Math.round(r.top + r.height / 2);"
-                                "})()"
-                            ),
-                            "returnByValue": True,
-                        },
-                    )
-                    coords = str(btn_res.get("result", {}).get("value") or "").strip()
-                    if re.fullmatch(r"\d+,\d+", coords):
-                        bx_s, by_s = coords.split(",", 1)
-                        bx, by = int(bx_s), int(by_s)
-                        await cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": bx, "y": by})
-                        await cdp.send(
-                            "Input.dispatchMouseEvent",
-                            {"type": "mousePressed", "x": bx, "y": by, "button": "left", "clickCount": 1},
-                        )
-                        await cdp.send(
-                            "Input.dispatchMouseEvent",
-                            {"type": "mouseReleased", "x": bx, "y": by, "button": "left", "clickCount": 1},
-                        )
-                    else:
-                        await cdp.send(
-                            "Input.dispatchKeyEvent",
-                            {
-                                "type": "keyDown",
-                                "key": "Enter",
-                                "code": "Enter",
-                                "text": "\r",
-                                "unmodifiedText": "\r",
-                                "windowsVirtualKeyCode": 13,
-                                "nativeVirtualKeyCode": 13,
-                            },
-                        )
-                        await cdp.send(
-                            "Input.dispatchKeyEvent",
-                            {
-                                "type": "keyUp",
-                                "key": "Enter",
-                                "code": "Enter",
-                                "windowsVirtualKeyCode": 13,
-                                "nativeVirtualKeyCode": 13,
-                            },
-                        )
-                    for _ in range(10):
-                        await asyncio.sleep(0.35)
-                        pwd_res = await cdp.send(
-                            "Runtime.evaluate",
-                            {
-                                "expression": (
-                                    "Boolean(document.querySelector('input[type=\"password\"]') "
-                                    "|| String(location.href || '').includes('/signin/challenge/'))"
-                                ),
-                                "returnByValue": True,
-                            },
-                        )
-                        if pwd_res.get("result", {}).get("value") is True:
-                            break
-            else:
-                await asyncio.sleep(1.8)
-
+            # Allow Google Sign-In Wiz controllers to finish hydrating before interacting
+            await asyncio.sleep(2.0)
             return proc, cdp
         except Exception:
             await http_session.close()
@@ -572,7 +474,25 @@ class GeminiWebBrowserLoginManager:
             cdp=cdp,
         )
         self._sessions[session_id] = ctx
-        return await self._refresh_and_build_state(ctx, pool=pool)
+        state = await self._refresh_and_build_state(ctx, pool=pool)
+        if (
+            ctx.email
+            and not state.get("completed")
+            and state.get("active_input_type") != "password"
+            and "/signin/challenge/" not in str(state.get("current_url", ""))
+        ):
+            state = await self.send_action(
+                session_id=session_id,
+                action_type="submit_text",
+                text=ctx.email,
+                pool=pool,
+            )
+            for _ in range(6):
+                if state.get("completed") or state.get("active_input_type") == "password" or "/signin/challenge/" in str(state.get("current_url", "")):
+                    break
+                await asyncio.sleep(0.35)
+                state = await self.get_state(session_id=session_id, pool=pool)
+        return state
 
     async def _refresh_and_build_state(
         self,
