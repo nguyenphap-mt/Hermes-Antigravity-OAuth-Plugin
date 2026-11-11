@@ -28,6 +28,7 @@ from .models import (
     _default_node_models_list,
     resolve_gemini_web_model,
     resolve_web_model_family,
+    scrape_models_and_tier_from_html,
 )
 from .session_manager import (
     GeminiWebSessionManager,
@@ -399,6 +400,7 @@ class GeminiWebPoolManager:
         node_id: str = "",
         linked_oauth_account_id: str = "",
         verify_immediately: bool = True,
+        reject_if_unverified: bool = False,
         http_client: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Parse cookies, save to `gemini_web_sessions.json`, optionally run live handshake, and register node."""
@@ -410,6 +412,7 @@ class GeminiWebPoolManager:
             }
 
         resolved_id = (node_id or "").strip() or _slugify_node_id(email or cookies["__Secure-1PSID"][:16])
+        previous_session = self.session_manager.get_session(resolved_id)
         self.session_manager.save_session(node_id=resolved_id, cookies=cookies)
 
         probe_res: Dict[str, Any] = {
@@ -423,6 +426,18 @@ class GeminiWebPoolManager:
             probe_res = await self.session_manager.handshake_and_probe_models(
                 resolved_id, http_client=http_client
             )
+            if reject_if_unverified and not probe_res.get("ok"):
+                if previous_session is not None:
+                    sessions = self.session_manager._load_all_sessions()
+                    sessions[resolved_id] = previous_session
+                    self.session_manager._save_all_sessions(sessions)
+                else:
+                    self.session_manager.delete_session(resolved_id)
+                return {
+                    "ok": False,
+                    "error": str(probe_res.get("error") or "Phiên Cookie cục bộ đã hết hạn."),
+                    "handshake": probe_res,
+                }
 
         detected_email = (email or probe_res.get("email") or "").strip().lower()
         if not node_id and detected_email:
@@ -494,6 +509,112 @@ class GeminiWebPoolManager:
             "node": self.format_node_for_dashboard(target_node),
             "handshake": probe_res,
         }
+
+    def register_verified_browser_session(
+        self,
+        cookies: Dict[str, str],
+        snlm0e: str,
+        cfb2h: str = "",
+        fsid: str = "",
+        html: str = "",
+        user_agent: str = "",
+        requested_email: str = "",
+        requested_node_id: str = "",
+    ) -> Dict[str, Any]:
+        """Atomically persist an authentic session captured from the live interactive Gemini Web browser."""
+        scraped = scrape_models_and_tier_from_html(html)
+        scraped_email = str(scraped.get("email") or "").strip().lower()
+        req_email_clean = str(requested_email or "").strip().lower()
+        effective_email = scraped_email or req_email_clean
+
+        # Only reuse requested_node_id if the signed-in Google account matches (or email was not visible in DOM)
+        if (
+            requested_node_id
+            and (not scraped_email or not req_email_clean or scraped_email == req_email_clean)
+        ):
+            resolved_id = requested_node_id.strip()
+        else:
+            resolved_id = _slugify_node_id(effective_email or cookies.get("__Secure-1PSID", "web")[:16])
+
+        # Resolve existing node by email if it already exists under another id
+        with self._lock:
+            cfg, nodes = self._load_pool_raw()
+            existing_node: Optional[GeminiWebNode] = None
+            for n in nodes:
+                if n.node_id == resolved_id or (effective_email and n.email.lower() == effective_email):
+                    existing_node = n
+                    resolved_id = n.node_id
+                    break
+
+            linked = self.session_manager._resolve_linked_google_account(
+                resolved_id, email_hint=effective_email
+            )
+            tier_rank = {"free": 0, "pro": 1, "ultra": 2}
+            scraped_tier = str(scraped.get("detected_tier") or "free").lower()
+            linked_tier = str(linked.get("tier") or "free").lower() if linked else "free"
+            best_tier = (
+                linked_tier
+                if tier_rank.get(linked_tier, 0) > tier_rank.get(scraped_tier, 0)
+                else scraped_tier
+            )
+            if best_tier == "free" and existing_node and tier_rank.get(existing_node.detected_tier, 0) > 0:
+                best_tier = existing_node.detected_tier
+
+            self.session_manager.save_session(
+                node_id=resolved_id,
+                cookies=cookies,
+                snlm0e=snlm0e,
+                cfb2h=cfb2h or "boq_assistant-bard-web-server_20260501.08_p0",
+                fsid=fsid,
+                user_agent=user_agent,
+                replace_cookies=True,
+            )
+
+            models_list = scraped.get("models") or _default_node_models_list()
+            tier_label = (
+                "Google AI Ultra"
+                if best_tier == "ultra"
+                else ("Google AI Pro" if best_tier == "pro" else "Free")
+            )
+            default_disp = (
+                f"{effective_email.split('@')[0]} ({tier_label})"
+                if effective_email
+                else resolved_id
+            )
+
+            if existing_node:
+                existing_node.email = effective_email or existing_node.email
+                existing_node.display_name = existing_node.display_name or default_disp
+                if linked and linked.get("email") and not existing_node.linked_oauth_account_id:
+                    existing_node.linked_oauth_account_id = linked["email"]
+                old_tier = existing_node.detected_tier
+                existing_node.status = "ready"
+                existing_node.enabled = True
+                existing_node.detected_tier = best_tier
+                if old_tier != best_tier:
+                    old_defaults = TIER_DEFAULT_LIMITS.get(old_tier, TIER_DEFAULT_LIMITS["free"])
+                    if existing_node.quota_limits.get("argon_hourly_limit") == old_defaults.get("argon_hourly_limit"):
+                        existing_node.quota_limits = dict(TIER_DEFAULT_LIMITS.get(best_tier, TIER_DEFAULT_LIMITS["pro"]))
+                existing_node.available_models = models_list
+                existing_node.last_error = ""
+                target_node = existing_node
+            else:
+                target_node = GeminiWebNode(
+                    node_id=resolved_id,
+                    email=effective_email,
+                    display_name=default_disp,
+                    linked_oauth_account_id=(linked.get("email") if linked else "") or "",
+                    enabled=True,
+                    status="ready",
+                    detected_tier=best_tier,
+                    available_models=models_list,
+                    default_web_model="gemini-web-argon",
+                    quota_limits=dict(TIER_DEFAULT_LIMITS.get(best_tier, TIER_DEFAULT_LIMITS["pro"])),
+                )
+                nodes.append(target_node)
+
+            self._save_pool_raw(cfg, nodes)
+            return self.format_node_for_dashboard(target_node)
 
     def toggle_node(self, node_id: str, enabled: Optional[bool] = None) -> Optional[GeminiWebNode]:
         with self._lock:

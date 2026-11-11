@@ -1432,6 +1432,14 @@ def _get_gemini_web_client(pool=None):
     return GeminiWebClient(pool_manager=pool or _get_gemini_web_pool())
 
 
+def _get_gemini_web_browser_login_manager():
+    try:
+        from tools.antigravity_bridge.gemini_web.browser_login import get_shared_browser_login_manager
+    except ImportError:
+        from bridge.gemini_web.browser_login import get_shared_browser_login_manager
+    return get_shared_browser_login_manager(hermes_dir=_get_hermes_dir())
+
+
 class GeminiWebConfigRequest(BaseModel):
     routing_mode: Optional[str] = None  # "hybrid_failover" | "web_first" | "isolated"
     rotation_strategy: Optional[str] = None  # "sticky_session" | "least_used" | "round_robin"
@@ -1479,11 +1487,32 @@ class GeminiWebNodeTestRequest(BaseModel):
     prompt: str = "Xin chào! Hãy xác nhận ngắn gọn bạn đang hoạt động qua Gemini Web App."
 
 
+class GeminiWebBrowserLoginStartRequest(BaseModel):
+    email: str = ""
+    node_id: str = ""
+
+
+class GeminiWebBrowserLoginInputRequest(BaseModel):
+    session_id: str
+    action_type: str = "click"  # "click" | "submit_text" | "type" | "key" | "clear_input" | "scroll" | "reload"
+    x: float = 0.0
+    y: float = 0.0
+    text: str = ""
+    key: str = ""
+    delta_y: float = 0.0
+    clear_first: bool = True
+    press_enter: bool = True
+
+
+class GeminiWebBrowserLoginStopRequest(BaseModel):
+    session_id: str
+
+
 _GWEB_HANDSHAKE_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 
 async def _auto_sync_gemini_web_pool(pool) -> List[Dict[str, Any]]:
-    """Auto-discover and import/update nodes from local Browser profiles, Camofox, Flow, and Google OAuth Pool."""
+    """Auto-discover and import/update nodes from local Browser profiles only when session is live & verified."""
     discovered = pool.session_manager.discover_cookies_from_local_browser_profiles(
         include_system_profiles=True
     )
@@ -1498,8 +1527,9 @@ async def _auto_sync_gemini_web_pool(pool) -> List[Dict[str, Any]]:
             display_name=item.get("display_name") or "",
             linked_oauth_account_id=item.get("linked_oauth_account_id") or "",
             verify_immediately=True,
+            reject_if_unverified=True,
         )
-        if res.get("node"):
+        if res.get("ok") and res.get("node"):
             imported_nodes.append(res["node"])
     return imported_nodes
 
@@ -1658,6 +1688,61 @@ async def poll_gemini_web_auto_handshake(session_id: str):
             "pool": snap,
         }
     return {"ok": True, **info}
+
+
+@router.post("/gemini-web/browser-login/start")
+async def start_gemini_web_browser_login(req: GeminiWebBrowserLoginStartRequest):
+    """Launch an interactive Google Sign-In browser session rendered inside the Dashboard modal."""
+    try:
+        pool = _get_gemini_web_pool()
+        mgr = _get_gemini_web_browser_login_manager()
+        return await mgr.start_session(email=req.email, node_id=req.node_id, pool=pool)
+    except Exception as e:
+        logger.error("Failed starting interactive Gemini Web browser login: %s", e)
+        return {"ok": False, "error": str(e), "message": str(e)}
+
+
+@router.get("/gemini-web/browser-login/state/{session_id}")
+async def get_gemini_web_browser_login_state(session_id: str):
+    """Fetch the latest viewport screenshot and completion status of an interactive login session."""
+    try:
+        pool = _get_gemini_web_pool()
+        mgr = _get_gemini_web_browser_login_manager()
+        return await mgr.get_state(session_id=session_id, pool=pool)
+    except Exception as e:
+        return {"ok": False, "session_id": session_id, "error": str(e)}
+
+
+@router.post("/gemini-web/browser-login/input")
+async def send_gemini_web_browser_login_input(req: GeminiWebBrowserLoginInputRequest):
+    """Dispatch click, text submission, keystroke, or scroll to the interactive login browser."""
+    try:
+        pool = _get_gemini_web_pool()
+        mgr = _get_gemini_web_browser_login_manager()
+        return await mgr.send_action(
+            session_id=req.session_id,
+            action_type=req.action_type,
+            x=req.x,
+            y=req.y,
+            text=req.text,
+            key=req.key,
+            delta_y=req.delta_y,
+            clear_first=req.clear_first,
+            press_enter=req.press_enter,
+            pool=pool,
+        )
+    except Exception as e:
+        return {"ok": False, "session_id": req.session_id, "error": str(e)}
+
+
+@router.post("/gemini-web/browser-login/stop")
+async def stop_gemini_web_browser_login(req: GeminiWebBrowserLoginStopRequest):
+    """Terminate an interactive browser login session and clean up its temporary profile directory."""
+    try:
+        mgr = _get_gemini_web_browser_login_manager()
+        return await mgr.stop_session(session_id=req.session_id)
+    except Exception as e:
+        return {"ok": False, "session_id": req.session_id, "error": str(e)}
 
 
 

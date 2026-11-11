@@ -226,6 +226,87 @@ class TestDashboardPluginAPI:
         assert "CHỜ ĐĂNG NHẬP WEB" in js_content
         assert "Đặt lại lúc " in js_content
 
+    def test_gemini_web_interactive_browser_login_endpoints_and_ui(self, monkeypatch, client):
+        """Verify In-Dashboard Interactive Cloud Browser Login API routes and UI viewport integration."""
+        from dashboard import plugin_api
+
+        class _MockBrowserLoginMgr:
+            async def start_session(self, email="", node_id="", pool=None):
+                return {
+                    "ok": True,
+                    "session_id": "gweb_bl_test_123",
+                    "status": "awaiting_login",
+                    "width": 1024,
+                    "height": 680,
+                    "current_url": "https://accounts.google.com/v3/signin/challenge/pwd",
+                    "image_b64": "ZmFrZV9qcGVn",
+                    "completed": False,
+                }
+
+            async def get_state(self, session_id: str, pool=None):
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "status": "awaiting_login",
+                    "width": 1024,
+                    "height": 680,
+                    "current_url": "https://accounts.google.com/v3/signin/challenge/pwd",
+                    "image_b64": "ZmFrZV9qcGVn",
+                    "completed": False,
+                }
+
+            async def send_action(self, **kwargs):
+                return {
+                    "ok": True,
+                    "session_id": kwargs.get("session_id"),
+                    "status": "completed",
+                    "completed": True,
+                    "message": "Đã đăng nhập thành công Gemini Web!",
+                    "node": {"node_id": "gweb_lecao043_gmail_com", "email": "lecao043@gmail.com", "status": "ready"},
+                }
+
+            async def stop_session(self, session_id: str):
+                return {"ok": True, "session_id": session_id, "stopped": True}
+
+        monkeypatch.setattr(plugin_api, "_get_gemini_web_browser_login_manager", lambda: _MockBrowserLoginMgr())
+
+        r_start = client.post(
+            "/api/plugins/antigravity/gemini-web/browser-login/start",
+            json={"email": "lecao043@gmail.com", "node_id": "gweb_lecao043_gmail_com"},
+        )
+        assert r_start.status_code == 200
+        d_start = r_start.json()
+        assert d_start["ok"] is True
+        assert d_start["session_id"] == "gweb_bl_test_123"
+        assert d_start["image_b64"] == "ZmFrZV9qcGVn"
+
+        r_state = client.get("/api/plugins/antigravity/gemini-web/browser-login/state/gweb_bl_test_123")
+        assert r_state.status_code == 200
+        assert r_state.json()["ok"] is True
+
+        r_input = client.post(
+            "/api/plugins/antigravity/gemini-web/browser-login/input",
+            json={"session_id": "gweb_bl_test_123", "action_type": "submit_text", "text": "secret"},
+        )
+        assert r_input.status_code == 200
+        assert r_input.json()["completed"] is True
+
+        r_stop = client.post(
+            "/api/plugins/antigravity/gemini-web/browser-login/stop",
+            json={"session_id": "gweb_bl_test_123"},
+        )
+        assert r_stop.status_code == 200
+        assert r_stop.json()["stopped"] is True
+
+        js_bundle = _PLUGIN_DIR / "dashboard" / "dist" / "index.js"
+        js_content = js_bundle.read_text(encoding="utf-8")
+        assert "/gemini-web/browser-login/start" in js_content
+        assert "/gemini-web/browser-login/state/" in js_content
+        assert "/gemini-web/browser-login/input" in js_content
+        assert "/gemini-web/browser-login/stop" in js_content
+        assert "ag-modal-dialog-wide" in js_content
+
+
 
 
 

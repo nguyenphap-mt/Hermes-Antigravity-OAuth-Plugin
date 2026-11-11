@@ -396,6 +396,50 @@
   box-sizing: border-box !important;
 }
 
+.ag-modal-dialog-wide {
+  max-width: 780px !important;
+  max-height: 92dvh !important;
+  overflow-y: auto !important;
+}
+
+.ag-browser-viewport {
+  position: relative !important;
+  width: 100% !important;
+  aspect-ratio: 1024 / 680 !important;
+  background: #050608 !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  outline: none !important;
+  cursor: pointer !important;
+}
+
+.ag-browser-viewport:focus {
+  border-color: #10b981 !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25) !important;
+}
+
+.ag-browser-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: fill !important;
+  display: block !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+}
+
+.ag-click-ripple {
+  position: absolute !important;
+  width: 22px !important;
+  height: 22px !important;
+  margin-left: -11px !important;
+  margin-top: -11px !important;
+  border-radius: 9999px !important;
+  border: 2px solid #34d399 !important;
+  background: rgba(16, 185, 129, 0.22) !important;
+  pointer-events: none !important;
+}
+
 /* ---------------------------------------------------------------------------
  * Form Controls (Inputs, Selects, Textareas)
  * --------------------------------------------------------------------------- */

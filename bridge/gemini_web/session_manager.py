@@ -35,6 +35,25 @@ DEFAULT_USER_AGENT = (
 
 ROTATE_INTERVAL_SECONDS = 540.0  # 9 minutes
 
+ALLOWED_GEMINI_WEB_COOKIE_DOMAINS = frozenset(
+    {
+        "",
+        ".google.com",
+        "google.com",
+        "gemini.google.com",
+        ".gemini.google.com",
+        "accounts.google.com",
+        ".accounts.google.com",
+    }
+)
+
+
+def is_allowed_gemini_web_cookie_domain(domain: str) -> bool:
+    """Return True only if cookie domain belongs to Google root, Accounts, or Gemini Web (blocks flow.google.com/youtube)."""
+    d = str(domain or "").strip().lower()
+    return d in ALLOWED_GEMINI_WEB_COOKIE_DOMAINS
+
+
 
 def get_hermes_dir() -> Path:
     """Resolve active Hermes home directory."""
@@ -106,7 +125,8 @@ def parse_flexible_cookie_input(
                 cookie_list = parsed["cookies"]
 
             if cookie_list is not None:
-                fallback_cookies: Dict[str, str] = {}
+                root_cookies: Dict[str, str] = {}
+                gemini_specific_cookies: Dict[str, str] = {}
                 for item in cookie_list:
                     if not isinstance(item, dict) or not item.get("name") or item.get("value") is None:
                         continue
@@ -115,19 +135,14 @@ def parse_flexible_cookie_input(
                     if is_synthetic_oauth_cookie(c_val):
                         continue
                     c_domain = str(item.get("domain") or "").strip().lower()
-                    if not c_domain or c_domain in (
-                        ".google.com",
-                        "google.com",
-                        "gemini.google.com",
-                        ".gemini.google.com",
-                        "accounts.google.com",
-                    ):
-                        cookies[c_name] = c_val
-                    elif c_name not in fallback_cookies:
-                        fallback_cookies[c_name] = c_val
-                for k, v in fallback_cookies.items():
-                    if k not in cookies:
-                        cookies[k] = v
+                    if not is_allowed_gemini_web_cookie_domain(c_domain):
+                        continue
+                    if c_domain in ("gemini.google.com", ".gemini.google.com"):
+                        gemini_specific_cookies[c_name] = c_val
+                    else:
+                        root_cookies[c_name] = c_val
+                cookies.update(root_cookies)
+                cookies.update(gemini_specific_cookies)
                 cookies = _sanitize_parsed_cookies(cookies)
                 if "__Secure-1PSID" in cookies:
                     return cookies
@@ -232,23 +247,24 @@ class GeminiWebSessionManager:
         cfb2h: str = "",
         fsid: str = "",
         user_agent: str = DEFAULT_USER_AGENT,
+        replace_cookies: bool = False,
     ) -> Dict[str, Any]:
         sessions = self._load_all_sessions()
         existing = sessions.get(node_id, {})
-        merged_cookies = dict(existing.get("cookies") or {})
+        merged_cookies = {} if replace_cookies else dict(existing.get("cookies") or {})
         merged_cookies.update({k: v for k, v in cookies.items() if v})
 
         now = time.time()
         record = {
             "node_id": node_id,
             "cookies": merged_cookies,
-            "snlm0e": snlm0e or existing.get("snlm0e") or "",
-            "cfb2h": cfb2h or existing.get("cfb2h") or "",
-            "fsid": fsid or existing.get("fsid") or "",
+            "snlm0e": snlm0e if replace_cookies else (snlm0e or existing.get("snlm0e") or ""),
+            "cfb2h": cfb2h if replace_cookies else (cfb2h or existing.get("cfb2h") or ""),
+            "fsid": fsid if replace_cookies else (fsid or existing.get("fsid") or ""),
             "user_agent": user_agent or existing.get("user_agent") or DEFAULT_USER_AGENT,
-            "last_rotated_at": float(existing.get("last_rotated_at") or now),
+            "last_rotated_at": now if replace_cookies else float(existing.get("last_rotated_at") or now),
             "next_rotation_at": float(now + ROTATE_INTERVAL_SECONDS),
-            "consecutive_rotate_failures": int(existing.get("consecutive_rotate_failures") or 0),
+            "consecutive_rotate_failures": 0 if (replace_cookies or snlm0e) else int(existing.get("consecutive_rotate_failures") or 0),
             "updated_at": now,
         }
         sessions[node_id] = record
@@ -691,8 +707,9 @@ class GeminiWebSessionManager:
                         if not r_name or not r_val:
                             continue
                         host_l = str(r_host or "").lower()
-                        if host_l in (".google.com", "google.com", "gemini.google.com") or str(r_name) not in ck_map:
-                            ck_map[str(r_name)] = str(r_val)
+                        if is_allowed_gemini_web_cookie_domain(host_l):
+                            if host_l in ("gemini.google.com", ".gemini.google.com") or str(r_name) not in ck_map:
+                                ck_map[str(r_name)] = str(r_val)
                     if ck_map.get("__Secure-1PSID"):
                         dedup_key = flow_default_email or f"psid:{ck_map['__Secure-1PSID'][:24]}"
                         if dedup_key not in discovered_by_key:
@@ -813,8 +830,9 @@ class GeminiWebSessionManager:
                             if not dec_val:
                                 continue
                             host_l = str(r_host or "").lower()
-                            if host_l in (".google.com", "google.com", "gemini.google.com") or str(r_name) not in ck_map:
-                                ck_map[str(r_name)] = dec_val
+                            if is_allowed_gemini_web_cookie_domain(host_l):
+                                if host_l in ("gemini.google.com", ".gemini.google.com") or str(r_name) not in ck_map:
+                                    ck_map[str(r_name)] = dec_val
 
                         if ck_map.get("__Secure-1PSID"):
                             dedup_key = f"gemini_desktop:{active_gaia_id or ck_map['__Secure-1PSID'][:20]}"

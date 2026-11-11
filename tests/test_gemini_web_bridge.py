@@ -906,4 +906,231 @@ def test_parse_bard_stream_generate_response_ignores_empty_trailing_rcid_and_par
     assert "```" not in cleaned
 
 
+# =============================================================================
+# 7. Cross-Domain Cookie Isolation, Stale Sync Guard & Interactive Browser Login
+# =============================================================================
+
+def test_cookie_parser_blocks_foreign_domain_osid_from_flow_storage_state():
+    """Ensure flow.google.com / labs.google OSID cookies never leak into gemini.google.com session cookies."""
+    storage_state = json.dumps(
+        {
+            "cookies": [
+                {"name": "__Secure-1PSID", "value": "g.a000_REAL_GOOGLE_PSID", "domain": ".google.com"},
+                {"name": "__Secure-1PSIDTS", "value": "sidts_REAL_GOOGLE_TS", "domain": ".google.com"},
+                {"name": "OSID", "value": "FLOW_FOREIGN_OSID_DO_NOT_LEAK", "domain": "flow.google.com"},
+                {"name": "__Secure-OSID", "value": "LABS_FOREIGN_OSID_DO_NOT_LEAK", "domain": "labs.google"},
+                {"name": "YSC", "value": "YOUTUBE_COOKIE", "domain": ".youtube.com"},
+                {"name": "OSID", "value": "GEMINI_REAL_OSID", "domain": "gemini.google.com"},
+            ]
+        }
+    )
+    parsed = parse_flexible_cookie_input(storage_state)
+    assert parsed["__Secure-1PSID"] == "g.a000_REAL_GOOGLE_PSID"
+    assert parsed["__Secure-1PSIDTS"] == "sidts_REAL_GOOGLE_TS"
+    assert parsed["OSID"] == "GEMINI_REAL_OSID"
+    assert "__Secure-OSID" not in parsed
+    assert "YSC" not in parsed
+
+    # Even when gemini.google.com has no OSID, flow.google.com OSID must STILL be rejected
+    storage_state_only_flow_osid = json.dumps(
+        {
+            "cookies": [
+                {"name": "__Secure-1PSID", "value": "g.a000_REAL_GOOGLE_PSID", "domain": ".google.com"},
+                {"name": "OSID", "value": "FLOW_FOREIGN_OSID_DO_NOT_LEAK", "domain": "flow.google.com"},
+            ]
+        }
+    )
+    parsed2 = parse_flexible_cookie_input(storage_state_only_flow_osid)
+    assert parsed2["__Secure-1PSID"] == "g.a000_REAL_GOOGLE_PSID"
+    assert "OSID" not in parsed2
+
+
+def test_stale_local_profile_rejected_when_reject_if_unverified_enabled(tmp_path: Path):
+    """Ensure 63-day-old expired flow_storage_state.json does not pollute gemini_web_sessions.json or mark node EXPIRED."""
+    async def _run():
+        pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+        # Seed clean unverified placeholder node (like an OAuth account awaiting web sign-in)
+        pool_file = tmp_path / "gemini_web_pool.json"
+        pool_file.write_text(
+            json.dumps(
+                {
+                    "config": {"routing_mode": "hybrid_failover"},
+                    "nodes": [
+                        {
+                            "node_id": "gweb_lecao043_gmail_com",
+                            "email": "lecao043@gmail.com",
+                            "display_name": "Le Cao",
+                            "enabled": True,
+                            "status": "unverified",
+                            "detected_tier": "pro",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        async def _fake_expired_get(url: str, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.url = "https://accounts.google.com/v3/signin/identifier"
+            resp.text = "<html>Sign in</html>"
+            resp.cookies = {}
+            return resp
+
+        async def _fake_expired_post(url: str, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 401
+            resp.text = "Unauthorized"
+            resp.cookies = {}
+            return resp
+
+        mock_http = MagicMock()
+        mock_http.get = _fake_expired_get
+        mock_http.post = _fake_expired_post
+
+        res = await pool.import_or_update_node(
+            psid="g.a000_STALE_63_DAYS_OLD",
+            psidts="sidts_STALE_63_DAYS_OLD",
+            email="lecao043@gmail.com",
+            verify_immediately=True,
+            reject_if_unverified=True,
+            http_client=mock_http,
+        )
+        assert res["ok"] is False
+        # Dead cookies must NOT remain in gemini_web_sessions.json
+        assert pool.session_manager.get_session("gweb_lecao043_gmail_com") is None
+        assert pool.session_manager.get_session("lecao043_gmail_com") is None
+        snap = pool.get_dashboard_pool_snapshot()
+        assert snap["nodes"][0]["status"] == "unverified"
+        assert snap["nodes"][0]["cookie_health"]["has_1psid"] is False
+
+    asyncio.run(_run())
+
+
+def test_interactive_browser_login_manager_auto_captures_session_and_cleans_up(tmp_path: Path):
+    """Verify GeminiWebBrowserLoginManager dispatches inputs, blocks non-Google URLs, and auto-saves ready node upon SNlM0e."""
+    from bridge.gemini_web.browser_login import (
+        GeminiWebBrowserLoginManager,
+        build_google_service_login_url,
+        is_allowed_login_url,
+    )
+
+    # 1. URL builders & security guard
+    login_url = build_google_service_login_url("lecao043@gmail.com")
+    assert "accounts.google.com/ServiceLogin" in login_url
+    assert "Email=lecao043%40gmail.com" in login_url
+    assert "gemini.google.com%2Fapp" in login_url
+
+    assert is_allowed_login_url("https://accounts.google.com/v3/signin/challenge/pwd") is True
+    assert is_allowed_login_url("https://gemini.google.com/app?hl=vi") is True
+    assert is_allowed_login_url("file:///etc/passwd") is False
+    assert is_allowed_login_url("chrome://settings") is False
+    assert is_allowed_login_url("http://127.0.0.1:9119/admin") is False
+
+    # 2. Full async session flow with mocked CDP session
+    async def _run():
+        pool = GeminiWebPoolManager(hermes_dir=tmp_path)
+        mgr = GeminiWebBrowserLoginManager(hermes_dir=tmp_path)
+
+        cdp_calls = []
+        current_state = {
+            "url": "https://accounts.google.com/v3/signin/challenge/pwd",
+            "title": "Đăng nhập - Tài khoản Google",
+            "snlm0e": "",
+            "cfb2h": "",
+            "fsid": "",
+            "inputType": "password",
+            "userAgent": "Mozilla/5.0 Chrome/145.0.0.0 Safari/537.36",
+            "html": "<html>Password step</html>",
+        }
+
+        class _FakeCDP:
+            closed = False
+
+            async def send(self, method: str, params=None):
+                cdp_calls.append((method, params or {}))
+                if method == "Page.captureScreenshot":
+                    return {"data": "ZmFrZV9qcGVnX2J5dGVz"}
+                if method == "Runtime.evaluate":
+                    expr = (params or {}).get("expression", "")
+                    if "outerHTML" in expr:
+                        return {"result": {"value": current_state["html"]}}
+                    return {"result": {"value": json.dumps(current_state)}}
+                if method == "Network.getAllCookies":
+                    return {
+                        "cookies": [
+                            {"name": "__Secure-1PSID", "value": "g.a000_LIVE_BROWSER_PSID", "domain": ".google.com"},
+                            {"name": "__Secure-1PSIDTS", "value": "sidts_LIVE_BROWSER_TS", "domain": ".google.com"},
+                            {"name": "OSID", "value": "GEMINI_LIVE_OSID", "domain": "gemini.google.com"},
+                            {"name": "OSID", "value": "FLOW_BAD_OSID", "domain": "flow.google.com"},
+                        ]
+                    }
+                return {}
+
+            async def close(self):
+                self.closed = True
+
+        fake_cdp = _FakeCDP()
+        fake_tmp = tmp_path / "fake_chrome_profile"
+        fake_tmp.mkdir(parents=True, exist_ok=True)
+
+        async def _fake_spawn(email: str, port: int, profile_dir: Path):
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc, fake_cdp
+
+        mgr._spawn_browser_and_connect_cdp = _fake_spawn
+
+        started = await mgr.start_session(email="lecao043@gmail.com", node_id="gweb_lecao043_gmail_com", pool=pool)
+        assert started["ok"] is True
+        sid = started["session_id"]
+        assert started["status"] == "awaiting_login"
+        assert started["image_b64"] == "ZmFrZV9qcGVnX2J5dGVz"
+
+        # Send password via Quick Input Bar (`submit_text`)
+        act_res = await mgr.send_action(
+            session_id=sid,
+            action_type="submit_text",
+            text="MySecretPass123!",
+            pool=pool,
+        )
+        assert act_res["ok"] is True
+        insert_calls = [c for c in cdp_calls if c[0] == "Input.insertText"]
+        assert len(insert_calls) == 1
+        assert insert_calls[0][1]["text"] == "MySecretPass123!"
+
+        # Simulate Google completing 2FA and redirecting to gemini.google.com/app with WIZ_global_data.SNlM0e
+        current_state.update(
+            {
+                "url": "https://gemini.google.com/app?hl=vi",
+                "title": "Gemini",
+                "snlm0e": "SNlM0e_LIVE_CLOUD_BROWSER_TOKEN",
+                "cfb2h": "boq_assistant-bard-web-server_20261111.01_p0",
+                "fsid": "-9988776655",
+                "html": '<html>"lecao043@gmail.com" "Google AI Pro" ["56fdd199312815e2","4 Argon"]</html>',
+            }
+        )
+
+        polled = await mgr.get_state(session_id=sid, pool=pool)
+        assert polled["ok"] is True
+        assert polled["completed"] is True
+        assert polled["status"] == "completed"
+        assert polled["node"]["email"] == "lecao043@gmail.com"
+        assert polled["node"]["status"] == "ready"
+        assert polled["node"]["cookie_health"]["has_1psid"] is True
+        assert polled["node"]["cookie_health"]["has_snlm0e"] is True
+        assert fake_cdp.closed is True
+
+        # Verify flow.google.com OSID was filtered out while gemini.google.com OSID was preserved
+        saved_sess = pool.session_manager.get_session(polled["node"]["node_id"])
+        assert saved_sess is not None
+        assert saved_sess["snlm0e"] == "SNlM0e_LIVE_CLOUD_BROWSER_TOKEN"
+        assert saved_sess["cookies"]["__Secure-1PSID"] == "g.a000_LIVE_BROWSER_PSID"
+        assert saved_sess["cookies"]["OSID"] == "GEMINI_LIVE_OSID"
+
+    asyncio.run(_run())
+
+
+
 
